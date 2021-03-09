@@ -26,9 +26,20 @@
   </parent>
 
   <artifactId>vertx-web-openapi</artifactId>
+  <name>vertx-web-openapi Patched</name>
+  <version>4.0.2-patch</version>
+
+  <distributionManagement>
+    <repository>
+      <id>cogia-artifactory</id>
+      <name>cogia artifactory-releases</name>
+      <url>https://artifactory.cogia.de/artifactory/libs-release-local</url>
+    </repository>
+  </distributionManagement>    
 
   <properties>
     <doc.skip>false</doc.skip>
+    <stack.version>4.0.2</stack.version>
     <junit5.version>5.7.0</junit5.version>
     <mockito.version>3.3.0</mockito.version>
     <assertj.version>3.15.0</assertj.version>
@@ -42,12 +53,12 @@
     <dependency>
       <groupId>io.vertx</groupId>
       <artifactId>vertx-web-validation</artifactId>
-      <version>${project.version}</version>
+      <version>${stack.version}</version>
     </dependency>
     <dependency>
       <groupId>io.vertx</groupId>
       <artifactId>vertx-web-api-service</artifactId>
-      <version>${project.version}</version>
+      <version>${stack.version}</version>
     </dependency>
     <dependency>
       <groupId>io.vertx</groupId>
@@ -75,13 +86,13 @@
       <groupId>io.vertx</groupId>
       <artifactId>vertx-web-validation</artifactId>
       <type>test-jar</type>
-      <version>${project.version}</version>
+      <version>${stack.version}</version>
       <scope>test</scope>
     </dependency>
     <dependency>
       <groupId>io.vertx</groupId>
       <artifactId>vertx-web-client</artifactId>
-      <version>${project.version}</version>
+      <version>${stack.version}</version>
       <scope>test</scope>
     </dependency>
     <dependency>
