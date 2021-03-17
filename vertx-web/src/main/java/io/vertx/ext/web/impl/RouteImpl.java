@@ -264,8 +264,7 @@ public class RouteImpl implements Route {
   }
 
   private synchronized void setPath(String path) {
-    // See if the path contains ":" - if so then it contains parameter capture groups and we have to generate
-    // a regex for that
+    // See if the path is a wildcard "*" is present - If so we need to configure this path to be not exact
     if (path.charAt(path.length() - 1) != '*') {
       state = state.setExactPath(true);
       state = state.setPath(path);
@@ -274,8 +273,19 @@ public class RouteImpl implements Route {
       state = state.setPath(path.substring(0, path.length() - 1));
     }
 
-    if (path.indexOf(':') != -1) {
-      createPatternRegex(path);
+    // See if the path contains ":" - if so then it contains parameter capture groups and we have to generate
+    // a regex for that
+    int params = 0;
+    for (int i = 0; i <  path.length(); i++) {
+      if (path.charAt(i) == ':') {
+        params++;
+      }
+    }
+    if (params > 0) {
+      int found = createPatternRegex(path);
+      if (params != found) {
+        throw new IllegalArgumentException("path param does not follow the variable naming rules, expected (" + params + ") found (" + found + ")");
+      }
     }
 
     state = state.setPathEndsWithSlash(state.getPath().endsWith("/"));
@@ -288,19 +298,26 @@ public class RouteImpl implements Route {
   }
 
   private synchronized void findNamedGroups(String path) {
-    Matcher m = Pattern.compile("\\(\\?<([a-zA-Z][a-zA-Z0-9]*)>").matcher(path);
+    Matcher m = RE_TOKEN_NAME_SEARCH.matcher(path);
     while (m.find()) {
       state = state.addNamedGroupInRegex(m.group(1));
     }
   }
 
+  // Allow end users to select either the regular valid characters or the extender pattern
+  private static final String RE_VAR_NAME = Boolean.getBoolean("io.vertx.web.route.param.extended-pattern") ?
+    "[A-Za-z_$][A-Za-z0-9_$-]*" :
+    "[A-Za-z0-9_]+";
+
+  // Pattern for :<token name> in path
+  private static final Pattern RE_TOKEN_SEARCH = Pattern.compile(":(" + RE_VAR_NAME + ")");
+  // Pattern for (?<token name>) in path
+  private static final Pattern RE_TOKEN_NAME_SEARCH = Pattern.compile("\\(\\?<(" + RE_VAR_NAME + ")>");
+
   // intersection of regex chars and https://tools.ietf.org/html/rfc3986#section-3.3
   private static final Pattern RE_OPERATORS_NO_STAR = Pattern.compile("([\\(\\)\\$\\+\\.])");
 
-  // Pattern for :<token name> in path
-  private static final Pattern RE_TOKEN_SEARCH = Pattern.compile(":([A-Za-z][A-Za-z0-9_]*)");
-
-  private synchronized void createPatternRegex(String path) {
+  private synchronized int createPatternRegex(String path) {
     // escape path from any regex special chars
     path = RE_OPERATORS_NO_STAR.matcher(path).replaceAll("\\\\$1");
     // allow usage of * at the end as per documentation
@@ -331,6 +348,7 @@ public class RouteImpl implements Route {
 
     state = state.setGroups(groups);
     state = state.setPattern(Pattern.compile(path));
+    return index;
   }
 
   private void checkPath(String path) {

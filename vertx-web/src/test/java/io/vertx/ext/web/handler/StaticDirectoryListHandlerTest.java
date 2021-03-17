@@ -51,9 +51,23 @@ public class StaticDirectoryListHandlerTest extends WebTestBase {
         "<body>\n" +
         "<h1>Custom Index of /</h1>\n" +
         "<a href=\"/\">..</a>\n" +
-        "<ul id=\"files\"><li><a href=\"/.hidden.html\" title=\".hidden.html\">.hidden.html</a></li><li><a href=\"/a\" title=\"a\">a</a></li><li><a href=\"/file with spaces.html\" title=\"file with spaces.html\">file with spaces.html</a></li><li><a href=\"/foo.json\" title=\"foo.json\">foo.json</a></li><li><a href=\"/index.html\" title=\"index.html\">index.html</a></li><li><a href=\"/otherpage.html\" title=\"otherpage.html\">otherpage.html</a></li><li><a href=\"/sockjs\" title=\"sockjs\">sockjs</a></li><li><a href=\"/somedir\" title=\"somedir\">somedir</a></li><li><a href=\"/somedir2\" title=\"somedir2\">somedir2</a></li><li><a href=\"/somedir3\" title=\"somedir3\">somedir3</a></li><li><a href=\"/testCompressionSuffix.html\" title=\"testCompressionSuffix.html\">testCompressionSuffix.html</a></li></ul>\n" +
+        "<ul id=\"files\"><li><a href=\"/.hidden.html\" title=\".hidden.html\">.hidden.html</a></li><li><a href=\"/a\" title=\"a\">a</a></li><li><a href=\"/file with spaces.html\" title=\"file with spaces.html\">file with spaces.html</a></li><li><a href=\"/foo.json\" title=\"foo.json\">foo.json</a></li><li><a href=\"/index.html\" title=\"index.html\">index.html</a></li><li><a href=\"/otherpage.html\" title=\"otherpage.html\">otherpage.html</a></li><li><a href=\"/sockjs\" title=\"sockjs\">sockjs</a></li><li><a href=\"/somedir\" title=\"somedir\">somedir</a></li><li><a href=\"/somedir2\" title=\"somedir2\">somedir2</a></li><li><a href=\"/somedir3\" title=\"somedir3\">somedir3</a></li><li><a href=\"/swaggerui\" title=\"swaggerui\">swaggerui</a></li><li><a href=\"/testCompressionSuffix.html\" title=\"testCompressionSuffix.html\">testCompressionSuffix.html</a></li></ul>\n" +
         "</body>\n" +
         "</html>");
+  }
+
+  @Test
+  public void testGetDirectoryFuzzyAccepts() throws Exception {
+    testRequest(HttpMethod.GET, "/",
+      req -> req.putHeader("Accept", "application/json, text/plain; q=0.9"),
+      res -> assertEquals("application/json", res.getHeader("Content-Type")), 200, "OK", null);
+  }
+
+  @Test
+  public void testGetDirectoryFuzzyAccepts2() throws Exception {
+    testRequest(HttpMethod.GET, "/",
+      req -> req.putHeader("Accept", "application/json; q=0.8, text/plain; q=0.9"),
+      res -> assertEquals("text/plain", res.getHeader("Content-Type")), 200, "OK", null);
   }
 
   @Test

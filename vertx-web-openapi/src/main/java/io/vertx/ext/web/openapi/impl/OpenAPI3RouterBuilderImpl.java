@@ -3,13 +3,14 @@ package io.vertx.ext.web.openapi.impl;
 import io.vertx.core.Handler;
 import io.vertx.core.Vertx;
 import io.vertx.core.eventbus.DeliveryOptions;
+import io.vertx.core.http.HttpClient;
+import io.vertx.core.http.HttpClientResponse;
 import io.vertx.core.http.HttpMethod;
 import io.vertx.core.json.JsonObject;
 import io.vertx.core.json.pointer.JsonPointer;
 import io.vertx.ext.web.Route;
 import io.vertx.ext.web.Router;
 import io.vertx.ext.web.RoutingContext;
-import io.vertx.ext.web.api.service.RouteToEBServiceHandler;
 import io.vertx.ext.web.handler.AuthenticationHandler;
 import io.vertx.ext.web.handler.BodyHandler;
 import io.vertx.ext.web.handler.ResponseContentTypeHandler;
@@ -60,13 +61,13 @@ public class OpenAPI3RouterBuilderImpl implements RouterBuilder {
   private OpenAPI3SchemaParser schemaParser;
   private OpenAPI3ValidationHandlerGenerator validationHandlerGenerator;
 
-  public OpenAPI3RouterBuilderImpl(Vertx vertx, OpenAPIHolderImpl spec, OpenAPILoaderOptions options) {
+  public OpenAPI3RouterBuilderImpl(Vertx vertx, HttpClient client, OpenAPIHolderImpl spec, OpenAPILoaderOptions options) {
     this.vertx = vertx;
     this.openapi = spec;
     this.options = new RouterBuilderOptions();
     this.bodyHandler = BodyHandler.create();
     this.globalHandlers = new ArrayList<>();
-    this.schemaRouter = SchemaRouter.create(vertx, options.toSchemaRouterOptions());
+    this.schemaRouter = SchemaRouter.create(client, vertx.fileSystem(), options.toSchemaRouterOptions());
     this.schemaParser = OpenAPI3SchemaParser.create(schemaRouter);
     // Noop binary format validator to fix bad multipart form
     this.schemaParser.withStringFormatValidator("binary", v -> true);
@@ -271,19 +272,27 @@ public class OpenAPI3RouterBuilderImpl implements RouterBuilder {
         handlersToLoad.addAll(operation.getUserHandlers());
         failureHandlersToLoad.addAll(operation.getUserFailureHandlers());
         if (operation.mustMountRouteToService()) {
-          RouteToEBServiceHandler routeToEBServiceHandler =
-            (operation.getEbServiceDeliveryOptions() != null) ? RouteToEBServiceHandler.build(
-              vertx.eventBus(),
-              operation.getEbServiceAddress(),
-              operation.getEbServiceMethodName(),
-              operation.getEbServiceDeliveryOptions()
-            ) : RouteToEBServiceHandler.build(
-              vertx.eventBus(),
-              operation.getEbServiceAddress(),
-              operation.getEbServiceMethodName()
+          try {
+            io.vertx.ext.web.api.service.RouteToEBServiceHandler routeToEBServiceHandler =
+              (operation.getEbServiceDeliveryOptions() != null) ? io.vertx.ext.web.api.service.RouteToEBServiceHandler.build(
+                vertx.eventBus(),
+                operation.getEbServiceAddress(),
+                operation.getEbServiceMethodName(),
+                operation.getEbServiceDeliveryOptions()
+              ) : io.vertx.ext.web.api.service.RouteToEBServiceHandler.build(
+                vertx.eventBus(),
+                operation.getEbServiceAddress(),
+                operation.getEbServiceMethodName()
+              );
+            routeToEBServiceHandler.extraPayloadMapper(serviceExtraPayloadMapper);
+            handlersToLoad.add(routeToEBServiceHandler);
+          } catch (NoClassDefFoundError exception) {
+            throw new IllegalStateException(
+              "You're trying to use api service without adding it to your classpath. " +
+                "Check you have included vertx-web-api-service in your dependencies",
+              exception
             );
-          routeToEBServiceHandler.extraPayloadMapper(serviceExtraPayloadMapper);
-          handlersToLoad.add(routeToEBServiceHandler);
+          }
         }
       } else {
         // Check if not implemented or method not allowed

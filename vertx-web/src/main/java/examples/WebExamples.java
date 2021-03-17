@@ -129,9 +129,13 @@ public class WebExamples {
       // `/some/path/subdir`
       // `/some/path/subdir/blah.html`
       //
-      // but not:
-      // `/some/path` the path is strict because it ends with slash
-      // `/some/bath`
+      // but **ALSO**:
+      // `/some/path` the final slash is always optional with a wildcard to preserve
+      //              compatibility with many client libraries.
+      // but **NOT**:
+      // `/some/patha`
+      // `/some/patha/`
+      // etc...
     });
 
   }
@@ -160,6 +164,21 @@ public class WebExamples {
 
   }
 
+  public void example4_2(Router router) {
+
+    router
+      .route(HttpMethod.GET, "/flights/:from-:to")
+      .handler(ctx -> {
+        // when handling requests to /flights/AMS-SFO will set:
+        String from = ctx.pathParam("from"); // AMS
+        String to = ctx.pathParam("to"); // SFO
+        // remember that this will not work as expected is the parameter
+        // naming pattern in use is the "extended" one. That is because in
+        // that case "-" is considered to be part of the variable name and
+        // not a separator.
+      });
+
+  }
 
   public void example5(Router router) {
 

@@ -2,12 +2,10 @@ package io.vertx.ext.web.impl;
 
 import io.netty.handler.codec.http.QueryStringDecoder;
 import io.vertx.codegen.annotations.Nullable;
-import io.vertx.core.AsyncResult;
-import io.vertx.core.Future;
-import io.vertx.core.Handler;
-import io.vertx.core.MultiMap;
+import io.vertx.core.*;
 import io.vertx.core.buffer.Buffer;
 import io.vertx.core.http.*;
+import io.vertx.core.http.impl.HttpServerRequestInternal;
 import io.vertx.core.net.NetSocket;
 import io.vertx.core.net.SocketAddress;
 import io.vertx.core.streams.Pipe;
@@ -20,9 +18,9 @@ import javax.security.cert.X509Certificate;
 import java.util.List;
 import java.util.Map;
 
-class HttpServerRequestWrapper implements HttpServerRequest {
+class HttpServerRequestWrapper implements HttpServerRequestInternal {
 
-  private final HttpServerRequest delegate;
+  private final HttpServerRequestInternal delegate;
   private final ForwardedParser forwardedParser;
 
   private boolean modified;
@@ -35,7 +33,7 @@ class HttpServerRequestWrapper implements HttpServerRequest {
   private MultiMap params;
 
   HttpServerRequestWrapper(HttpServerRequest request, AllowForwardHeaders allowForward) {
-    delegate = request;
+    delegate = (HttpServerRequestInternal) request;
     forwardedParser = new ForwardedParser(delegate, allowForward);
   }
 
@@ -318,6 +316,11 @@ class HttpServerRequestWrapper implements HttpServerRequest {
   }
 
   @Override
+  public int streamId() {
+    return delegate.streamId();
+  }
+
+  @Override
   public void toWebSocket(Handler<AsyncResult<ServerWebSocket>> handler) {
     delegate.toWebSocket(toWebSocket -> {
       if (toWebSocket.succeeded()) {
@@ -385,6 +388,16 @@ class HttpServerRequestWrapper implements HttpServerRequest {
   public HttpServerRequest routed(String route) {
     delegate.routed(route);
     return this;
+  }
+
+  @Override
+  public Context context() {
+    return delegate.context();
+  }
+
+  @Override
+  public Object metric() {
+    return delegate.metric();
   }
 
   @Override
