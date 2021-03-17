@@ -27,7 +27,7 @@
 
   <artifactId>vertx-web-openapi</artifactId>
   <name>vertx-web-openapi Patched</name>
-  <version>4.0.2-patch</version>
+  <version>4.0.3-patch</version>
 
   <distributionManagement>
     <repository>
