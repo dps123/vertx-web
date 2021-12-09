@@ -209,7 +209,7 @@ public class RoutingContextImplTest extends WebTestBase {
       ctx.json(new JsonObject());
     });
     testRequest(HttpMethod.GET, "/", null, res -> {
-      assertEquals("application/json; charset=utf-8", res.getHeader("Content-Type"));
+      assertEquals("application/json", res.getHeader("Content-Type"));
     }, HttpResponseStatus.OK.code(), HttpResponseStatus.OK.reasonPhrase(), null);
   }
 
@@ -219,7 +219,7 @@ public class RoutingContextImplTest extends WebTestBase {
       ctx.json(new JsonArray());
     });
     testRequest(HttpMethod.GET, "/", null, res -> {
-      assertEquals("application/json; charset=utf-8", res.getHeader("Content-Type"));
+      assertEquals("application/json", res.getHeader("Content-Type"));
     }, HttpResponseStatus.OK.code(), HttpResponseStatus.OK.reasonPhrase(), null);
   }
 
@@ -229,7 +229,7 @@ public class RoutingContextImplTest extends WebTestBase {
       ctx.json(true);
     });
     testRequest(HttpMethod.GET, "/", null, res -> {
-      assertEquals("application/json; charset=utf-8", res.getHeader("Content-Type"));
+      assertEquals("application/json", res.getHeader("Content-Type"));
     }, HttpResponseStatus.OK.code(), HttpResponseStatus.OK.reasonPhrase(), "true");
   }
 
@@ -239,7 +239,7 @@ public class RoutingContextImplTest extends WebTestBase {
       ctx.json(null);
     });
     testRequest(HttpMethod.GET, "/", null, res -> {
-      assertEquals("application/json; charset=utf-8", res.getHeader("Content-Type"));
+      assertEquals("application/json", res.getHeader("Content-Type"));
     }, HttpResponseStatus.OK.code(), HttpResponseStatus.OK.reasonPhrase(), "null");
   }
 
@@ -279,4 +279,32 @@ public class RoutingContextImplTest extends WebTestBase {
     testRequest(HttpMethod.GET, "/", null, HttpResponseStatus.OK.code(), HttpResponseStatus.OK.reasonPhrase(), null);
   }
 
+  @Test
+  public void test_get_or_default() throws Exception {
+    router.route().handler(ctx -> {
+      int foo = 1000;
+      ctx.put("foo", foo);
+      // ok
+      Integer val = ctx.get("foo");
+      assertEquals(1000, val.intValue());
+      try {
+        val = ctx.get("foobar");
+        assertNull(val);
+      } catch (RuntimeException e) {
+        fail(e);
+      }
+
+      try {
+        int v = ctx.get("foobar");
+        fail("NPE is expected");
+      } catch (NullPointerException e) {
+        // OK
+      }
+
+      int foobar = ctx.get("foobar", 1024);
+      assertEquals(1024, foobar);
+      ctx.response().end();
+    });
+    testRequest(HttpMethod.GET, "/", HttpResponseStatus.OK.code(), HttpResponseStatus.OK.reasonPhrase());
+  }
 }

@@ -93,26 +93,6 @@ public class EventBusBridgeImpl implements Handler<SockJSSocket> {
     this.bridgeEventHandler = bridgeEventHandler;
   }
 
-  private void handleSocketClosed(SockJSSocket sock, Map<String, MessageConsumer<?>> registrations) {
-    // On close unregister any handlers that haven't been unregistered
-    registrations.forEach((key, value) -> {
-      value.unregister();
-      checkCallHook(() -> new BridgeEventImpl(BridgeEventType.UNREGISTER,
-        new JsonObject().put("type", "unregister").put("address", value.address()), sock), null, null);
-    });
-
-    SockInfo info = sockInfos.remove(sock);
-    if (info != null) {
-      PingInfo pingInfo = info.pingInfo;
-      if (pingInfo != null) {
-        vertx.cancelTimer(pingInfo.timerID);
-      }
-    }
-
-    checkCallHook(() -> new BridgeEventImpl(BridgeEventType.SOCKET_CLOSED, null, sock),
-      null, null);
-  }
-
   private void handleSocketData(SockJSSocket sock, Buffer data, Map<String, MessageConsumer<?>> registrations) {
     JsonObject msg;
 
@@ -158,19 +138,35 @@ public class EventBusBridgeImpl implements Handler<SockJSSocket> {
 
   }
 
+  private void checkCallHook(Supplier<BridgeEventImpl> eventSupplier) {
+    checkCallHook(eventSupplier, null, null);
+  }
+
   private void checkCallHook(Supplier<BridgeEventImpl> eventSupplier, Runnable okAction, Runnable rejectAction) {
     if (bridgeEventHandler == null) {
       if (okAction != null) {
         okAction.run();
       }
     } else {
-      BridgeEventImpl event = eventSupplier.get();
+      final BridgeEventImpl event = eventSupplier.get();
+      final boolean before = sockInfos.containsKey(event.socket());
       bridgeEventHandler.handle(event);
-      event.future().onComplete(res -> {
-        if (res.succeeded()) {
-          if (res.result()) {
-            if (okAction != null) {
-              okAction.run();
+      event.future()
+        .onFailure(err -> LOG.error("Failure in bridge event handler", err))
+        .onSuccess(ok -> {
+          if (ok) {
+            final boolean after = sockInfos.containsKey(event.socket());
+            if (before != after) {
+              // even though the event check is valid, the socket info isn't valid anymore
+              if (rejectAction != null) {
+                rejectAction.run();
+              } else {
+                LOG.debug("SockJSSocket state change prevented send or pub");
+              }
+            } else {
+              if (okAction != null) {
+                okAction.run();
+              }
             }
           } else {
             if (rejectAction != null) {
@@ -179,10 +175,7 @@ public class EventBusBridgeImpl implements Handler<SockJSSocket> {
               LOG.debug("Bridge handler prevented send or pub");
             }
           }
-        } else {
-          LOG.error("Failure in bridge event handler", res.cause());
-        }
-      });
+        });
     }
   }
 
@@ -227,6 +220,15 @@ public class EventBusBridgeImpl implements Handler<SockJSSocket> {
         }
         Match match = checkMatches(false, address, null);
         if (match.doesMatch) {
+          // the socket is already listening to this address
+          // we don't allow more registrations as doing this operation in a
+          // loop could DDoS the bridge.
+          if (registrations.containsKey(address)) {
+            LOG.warn("Refusing to register as address is already registered");
+            replyError(sock, "address_already_registered");
+            return;
+          }
+
           Handler<Message<Object>> handler = msg -> {
             Match curMatch = checkMatches(false, address, msg.body());
             if (curMatch.doesMatch) {
@@ -261,7 +263,7 @@ public class EventBusBridgeImpl implements Handler<SockJSSocket> {
           registrations.put(address, reg);
           info.handlerCount++;
           // Notify registration completed
-          checkCallHook(() -> new BridgeEventImpl(BridgeEventType.REGISTERED, rawMsg, sock), null, null);
+          checkCallHook(() -> new BridgeEventImpl(BridgeEventType.REGISTERED, rawMsg, sock));
         } else {
           // inbound match failed
           if (debug) {
@@ -282,10 +284,10 @@ public class EventBusBridgeImpl implements Handler<SockJSSocket> {
         }
         Match match = checkMatches(false, address, null);
         if (match.doesMatch) {
-          MessageConsumer<?> reg = registrations.remove(address);
-          if (reg != null) {
-            reg.unregister();
+          MessageConsumer<?> registration = registrations.remove(address);
+          if (registration != null) {
             SockInfo info = sockInfos.get(sock);
+            registration.unregister();
             info.handlerCount--;
           }
         } else {
@@ -306,7 +308,7 @@ public class EventBusBridgeImpl implements Handler<SockJSSocket> {
     if (info != null) {
       info.pingInfo.lastPing = System.currentTimeMillis();
       // Trigger an event to allow custom behavior after updating lastPing
-      checkCallHook(() -> new BridgeEventImpl(BridgeEventType.SOCKET_PING, null, sock), null, null);
+      checkCallHook(() -> new BridgeEventImpl(BridgeEventType.SOCKET_PING, null, sock));
     }
   }
 
@@ -315,8 +317,10 @@ public class EventBusBridgeImpl implements Handler<SockJSSocket> {
       () -> {
         Map<String, MessageConsumer<?>> registrations = new HashMap<>();
 
-        sock.endHandler(v -> handleSocketClosed(sock, registrations));
-        sock.handler(data -> handleSocketData(sock, data, registrations));
+        sock
+          .handler(data -> handleSocketData(sock, data, registrations))
+          .exceptionHandler(err -> handleSocketException(sock, err, registrations))
+          .closeHandler(v -> handleSocketClosed(sock, registrations));
 
         // Start a checker to check for pings
         PingInfo pingInfo = new PingInfo();
@@ -333,6 +337,41 @@ public class EventBusBridgeImpl implements Handler<SockJSSocket> {
         sockInfo.pingInfo = pingInfo;
         sockInfos.put(sock, sockInfo);
       }, sock::close);
+  }
+
+  private void handleSocketClosed(SockJSSocket sock, Map<String, MessageConsumer<?>> registrations) {
+    clearSocketState(sock, registrations);
+    checkCallHook(() -> new BridgeEventImpl(BridgeEventType.SOCKET_CLOSED, null, sock));
+  }
+
+  private void handleSocketException(SockJSSocket sock, Throwable err, Map<String, MessageConsumer<?>> registrations) {
+    LOG.error("SockJSSocket exception", err);
+    clearSocketState(sock, registrations);
+    final JsonObject msg = new JsonObject().put("type", "err").put("failureType", "socketException");
+    if (err != null) {
+      msg.put("message", err.getMessage());
+    }
+    checkCallHook(() -> new BridgeEventImpl(BridgeEventType.SOCKET_ERROR, msg, sock));
+  }
+
+  private void clearSocketState(SockJSSocket sock, Map<String, MessageConsumer<?>> registrations) {
+    // On close or exception unregister any handlers that haven't been unregistered
+    for (MessageConsumer<?> registration : registrations.values()) {
+      registration.unregister();
+      checkCallHook(() ->
+        new BridgeEventImpl(
+          BridgeEventType.UNREGISTER,
+          new JsonObject().put("type", "unregister").put("address", registration.address()),
+          sock));
+    }
+    // ensure that no timers remain active
+    SockInfo info = sockInfos.remove(sock);
+    if (info != null) {
+      PingInfo pingInfo = info.pingInfo;
+      if (pingInfo != null) {
+        vertx.cancelTimer(pingInfo.timerID);
+      }
+    }
   }
 
   private void checkAddAccceptedReplyAddress(Message<?> message) {
@@ -403,7 +442,7 @@ public class EventBusBridgeImpl implements Handler<SockJSSocket> {
           authorise(curMatch, webUser, res -> {
             if (res.succeeded()) {
               if (res.result()) {
-                checkAndSend(send, address, body, headers, sock, replyAddress, null);
+                checkAndSend(send, address, body, headers, sock, replyAddress, awaitingReply);
               } else {
                 replyError(sock, "access_denied");
                 if (debug) {

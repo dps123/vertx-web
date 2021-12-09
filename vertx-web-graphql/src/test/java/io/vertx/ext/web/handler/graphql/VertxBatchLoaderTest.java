@@ -1,5 +1,5 @@
 /*
- * Copyright 2020 Red Hat, Inc.
+ * Copyright 2021 Red Hat, Inc.
  *
  * Red Hat licenses this file to you under the Apache License, version 2.0
  * (the "License"); you may not use this file except in compliance with the
@@ -27,6 +27,7 @@ import graphql.schema.idl.TypeDefinitionRegistry;
 import io.vertx.ext.web.handler.graphql.dataloader.VertxBatchLoader;
 import org.dataloader.BatchLoaderWithContext;
 import org.dataloader.DataLoader;
+import org.dataloader.DataLoaderFactory;
 import org.dataloader.DataLoaderRegistry;
 import org.junit.Test;
 
@@ -37,12 +38,15 @@ import static java.util.stream.Collectors.toList;
 
 public class VertxBatchLoaderTest extends GraphQLTestBase {
 
-  private AtomicBoolean batchloaderInvoked = new AtomicBoolean();
+  protected AtomicBoolean batchloaderInvoked = new AtomicBoolean();
 
   @Override
   public void setUp() throws Exception {
     super.setUp();
+    setUpGraphQLHandler();
+  }
 
+  protected void setUpGraphQLHandler() {
     BatchLoaderWithContext<String, User> userBatchLoader = VertxBatchLoader.create(
       (keys, environment, listPromise) -> {
         if (batchloaderInvoked.compareAndSet(false, true)) {
@@ -57,9 +61,10 @@ public class VertxBatchLoaderTest extends GraphQLTestBase {
       }
     );
 
-    graphQLHandler.dataLoaderRegistry(rc -> {
-      DataLoader<String, User> userDataLoader = DataLoader.newDataLoader(userBatchLoader);
-      return new DataLoaderRegistry().register("user", userDataLoader);
+    graphQLHandler.beforeExecute(bwc -> {
+      DataLoader<String, User> userDataLoader = DataLoaderFactory.newDataLoader(userBatchLoader);
+      DataLoaderRegistry dataLoaderRegistry = new DataLoaderRegistry().register("user", userDataLoader);
+      bwc.builder().dataLoaderRegistry(dataLoaderRegistry);
     });
   }
 

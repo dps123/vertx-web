@@ -27,7 +27,6 @@ import io.vertx.core.http.HttpHeaders;
 import io.vertx.core.http.HttpServerRequest;
 import io.vertx.core.impl.logging.Logger;
 import io.vertx.core.impl.logging.LoggerFactory;
-import io.vertx.ext.auth.AuthProvider;
 import io.vertx.ext.auth.User;
 import io.vertx.ext.web.RoutingContext;
 import io.vertx.ext.web.Session;
@@ -126,12 +125,6 @@ public class SessionHandlerImpl implements SessionHandler {
   }
 
   @Override
-  @Deprecated
-  public SessionHandler setAuthProvider(AuthProvider authProvider) {
-    return this;
-  }
-
-  @Override
   public SessionHandler setCookieless(boolean cookieless) {
     this.cookieless = cookieless;
     return this;
@@ -153,20 +146,28 @@ public class SessionHandlerImpl implements SessionHandler {
    *
    * @param cookie the cookie to set
    */
-  private void setCookieProperties(Cookie cookie) {
+  private void setCookieProperties(Cookie cookie, boolean expired) {
     cookie.setPath(sessionCookiePath);
     cookie.setSecure(sessionCookieSecure);
     cookie.setHttpOnly(sessionCookieHttpOnly);
     cookie.setSameSite(cookieSameSite);
-    // set max age if user requested it - else it's a session cookie
-    if (cookieMaxAge >= 0) {
-      cookie.setMaxAge(cookieMaxAge);
+    if (!expired) {
+      // set max age if user requested it - else it's a session cookie
+      if (cookieMaxAge >= 0) {
+        cookie.setMaxAge(cookieMaxAge);
+      }
     }
   }
 
   private SessionHandler flush(RoutingContext context, boolean skipCrc, boolean ignoreStatus, Handler<AsyncResult<Void>> handler) {
-    boolean sessionUsed = context.isSessionAccessed();
-    Session session = context.session();
+    final boolean sessionUsed = context.isSessionAccessed();
+    final Session session = context.session();
+
+    if (session == null) {
+      handler.handle(Future.failedFuture("No session in context"));
+      return this;
+    }
+
     if (!session.isDestroyed()) {
       final int currentStatusCode = context.response().getStatusCode();
       // Store the session (only and only if there was no error)
@@ -197,7 +198,7 @@ public class SessionHandlerImpl implements SessionHandler {
             // restore defaults
             session.setAccessed();
             cookie.setValue(session.value());
-            setCookieProperties(cookie);
+            setCookieProperties(cookie, false);
           }
 
           // we must invalidate the old id
@@ -241,7 +242,10 @@ public class SessionHandlerImpl implements SessionHandler {
     } else {
       if (!cookieless) {
         // invalidate the cookie as the session has been destroyed
-        context.removeCookie(sessionCookieName);
+        final Cookie expiredCookie = context.response().removeCookie(sessionCookieName);
+        if (expiredCookie != null) {
+          setCookieProperties(expiredCookie, true);
+        }
       }
       // if the session was regenerated in the request
       // the old id must also be removed
@@ -292,7 +296,7 @@ public class SessionHandlerImpl implements SessionHandler {
     if (sessionID != null && sessionID.length() > minLength) {
       // before starting any potential async operation here
       // pause parsing the request body. The reason is that
-      // we don't want to loose the body or protocol upgrades
+      // we don't want to lose the body or protocol upgrades
       // for async operations
       final boolean parseEnded = request.isEnded();
       if (!parseEnded) {
@@ -343,7 +347,7 @@ public class SessionHandlerImpl implements SessionHandler {
     Session session = sessionStore.createSession(sessionTimeout, minLength);
     context.setSession(session);
     if (!cookieless) {
-      context.removeCookie(sessionCookieName, false);
+      context.response().removeCookie(sessionCookieName, false);
     }
     // it's a new session we must store the user too otherwise it won't be linked
     context.put(SESSION_STOREUSER_KEY, true);
@@ -357,7 +361,7 @@ public class SessionHandlerImpl implements SessionHandler {
 
   public Future<Void> setUser(RoutingContext context, User user) {
     if (!cookieless) {
-      context.removeCookie(sessionCookieName, false);
+      context.response().removeCookie(sessionCookieName, false);
     }
     context.setUser(user);
     // signal we must store the user to link it to the session
@@ -392,7 +396,11 @@ public class SessionHandlerImpl implements SessionHandler {
         return path.substring(s, e);
       }
     } else {
-      Cookie cookie = context.getCookie(sessionCookieName);
+      // only pick the first cookie, when multiple sessions are used:
+      // https://www.rfc-editor.org/rfc/rfc6265#section-5.4
+      // The user agent SHOULD sort the cookie-list in the following order:
+      // Cookies with longer paths are listed before cookies with shorter paths.
+      Cookie cookie = context.request().getCookie(sessionCookieName);
       if (cookie != null) {
         // Look up sessionId
         return cookie.getValue();
@@ -444,7 +452,7 @@ public class SessionHandlerImpl implements SessionHandler {
     Session session = sessionStore.createSession(sessionTimeout, minLength);
     context.setSession(session);
     if (!cookieless) {
-      context.removeCookie(sessionCookieName, false);
+      context.response().removeCookie(sessionCookieName, false);
     }
     // it's a new session we must store the user too otherwise it won't be linked
     context.put(SESSION_STOREUSER_KEY, true);
@@ -452,13 +460,17 @@ public class SessionHandlerImpl implements SessionHandler {
   }
 
   private Cookie sessionCookie(final RoutingContext context, final Session session) {
-    Cookie cookie = context.getCookie(sessionCookieName);
+    // only pick the first cookie, when multiple sessions are used:
+    // https://www.rfc-editor.org/rfc/rfc6265#section-5.4
+    // The user agent SHOULD sort the cookie-list in the following order:
+    // Cookies with longer paths are listed before cookies with shorter paths.
+    Cookie cookie = context.request().getCookie(sessionCookieName);
     if (cookie != null) {
       return cookie;
     }
     cookie = Cookie.cookie(sessionCookieName, session.value());
-    setCookieProperties(cookie);
-    context.addCookie(cookie);
+    setCookieProperties(cookie, false);
+    context.response().addCookie(cookie);
     return cookie;
   }
 }

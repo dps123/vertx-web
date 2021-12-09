@@ -40,6 +40,7 @@ import io.vertx.core.http.HttpServerResponse;
 import io.vertx.core.impl.logging.Logger;
 import io.vertx.core.impl.logging.LoggerFactory;
 import io.vertx.core.shareddata.LocalMap;
+import io.vertx.ext.auth.VertxContextPRNG;
 import io.vertx.ext.auth.authorization.AuthorizationProvider;
 import io.vertx.ext.web.Router;
 import io.vertx.ext.web.RoutingContext;
@@ -51,6 +52,7 @@ import java.text.SimpleDateFormat;
 import java.util.*;
 
 import static io.vertx.core.buffer.Buffer.buffer;
+import static io.vertx.ext.auth.impl.Codec.base16Encode;
 
 /**
  *
@@ -110,7 +112,7 @@ public class SockJSHandlerImpl implements SockJSHandler {
     router.options("/chunking_test").handler(BaseTransport.createCORSOptionsHandler(options, "OPTIONS, POST"));
 
     // Info
-    router.get("/info").handler(BaseTransport.createInfoHandler(options));
+    router.get("/info").handler(BaseTransport.createInfoHandler(options, VertxContextPRNG.current(vertx)));
     router.options("/info").handler(BaseTransport.createCORSOptionsHandler(options, "OPTIONS, GET"));
 
     // Transports
@@ -240,13 +242,8 @@ public class SockJSHandlerImpl implements SockJSHandler {
     try {
         MessageDigest md = MessageDigest.getInstance("MD5");
         byte[] bytes = md.digest(str.getBytes(StandardCharsets.UTF_8));
-        StringBuilder sb = new StringBuilder();
-        for (byte b : bytes) {
-          sb.append(Integer.toHexString(b + 127));
-        }
-        return sb.toString();
-    }
-    catch (Exception e) {
+        return base16Encode(bytes);
+    } catch (Exception e) {
         LOG.error("Failed to generate MD5 for iframe, If-None-Match headers will be ignored");
         return null;
     }

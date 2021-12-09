@@ -71,7 +71,7 @@ public class RoutingContextWrapper extends RoutingContextImplBase {
   }
 
   @Override
-  public RoutingContextInternal visitHandler(int id) {
+  public synchronized RoutingContextInternal visitHandler(int id) {
     return ((RoutingContextInternal) inner).visitHandler(id);
   }
 
@@ -114,6 +114,11 @@ public class RoutingContextWrapper extends RoutingContextImplBase {
   @Override
   public <T> T get(String key) {
     return inner.get(key);
+  }
+
+  @Override
+  public <T> T get(String key, T defaultValue) {
+    return inner.get(key, defaultValue);
   }
 
   @Override

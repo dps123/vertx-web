@@ -874,12 +874,13 @@ final class RouteState {
         if (mountPoint.charAt(strip - 1)== '/') {
           strip--;
         }
-        path = path.substring(strip);
+        if (path != null) {
+          path = path.substring(strip);
+        }
       }
 
-      Matcher m = pattern.matcher(path);
-      if (m.matches()) {
-
+      Matcher m;
+      if (path != null && (m = pattern.matcher(path)).matches()) {
         if (!isEmpty(methods) && !containsMethod(request)) {
           // If I'm here path or path pattern matches, but the method is wrong
           return 405;
@@ -1056,7 +1057,7 @@ final class RouteState {
       if (requestPath.startsWith(thePath)) {
         // handle the "rest" as path param *
         ctx.pathParams()
-          .put("*", requestPath.substring(thePath.length()));
+          .put("*", URIDecoder.decodeURIComponent(requestPath.substring(thePath.length()), false));
         return true;
       }
       return false;
@@ -1067,18 +1068,16 @@ final class RouteState {
     if (virtualHostPattern == null) {
       return true;
     }
-    boolean match = false;
     String host = request.host();
     if (host == null) {
-      return match;
+      return false;
     }
     for (String h : host.split(":")) {
       if (virtualHostPattern.matcher(h).matches()) {
-        match = true;
-        break;
+        return true;
       }
     }
-    return match;
+    return false;
   }
 
   private static boolean pathMatchesExact(String base, String other, boolean significantSlash) {

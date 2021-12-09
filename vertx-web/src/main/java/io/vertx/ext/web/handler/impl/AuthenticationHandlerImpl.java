@@ -23,36 +23,28 @@ import io.vertx.ext.auth.User;
 import io.vertx.ext.auth.authentication.AuthenticationProvider;
 import io.vertx.ext.web.RoutingContext;
 import io.vertx.ext.web.Session;
-import io.vertx.ext.web.handler.AuthenticationHandler;
+import io.vertx.ext.web.handler.HttpException;
 
 /**
  * @author <a href="http://tfox.org">Tim Fox</a>
  */
-public abstract class AuthenticationHandlerImpl<T extends AuthenticationProvider> implements AuthenticationHandler {
+public abstract class AuthenticationHandlerImpl<T extends AuthenticationProvider> implements AuthenticationHandlerInternal {
 
-  static final String AUTH_PROVIDER_CONTEXT_KEY = "io.vertx.ext.web.handler.AuthenticationHandler.provider";
+  static final HttpException UNAUTHORIZED = new HttpException(401);
+  static final HttpException BAD_REQUEST = new HttpException(400);
+  static final HttpException BAD_METHOD = new HttpException(405);
 
-  static final HttpStatusException UNAUTHORIZED = new HttpStatusException(401);
-  static final HttpStatusException BAD_REQUEST = new HttpStatusException(400);
-  static final HttpStatusException BAD_METHOD = new HttpStatusException(405);
-
-  protected final String realm;
   protected final T authProvider;
+  // signal the kind of Multi-Factor Authentication used by the handler
+  protected final String mfa;
 
   public AuthenticationHandlerImpl(T authProvider) {
     this(authProvider, null);
   }
 
-  public AuthenticationHandlerImpl(T authProvider, String realm) {
+  public AuthenticationHandlerImpl(T authProvider, String mfa) {
     this.authProvider = authProvider;
-    this.realm = realm == null ? null : realm
-      // escape quotes
-      .replaceAll("\"", "\\\"");
-
-    if (this.realm != null &&
-      (this.realm.indexOf('\r') != -1 || this.realm.indexOf('\n') != -1)) {
-      throw new IllegalArgumentException("Not allowed [\\r|\\n] characters detected on realm name");
-    }
+    this.mfa = mfa;
   }
 
   @Override
@@ -64,9 +56,18 @@ public abstract class AuthenticationHandlerImpl<T extends AuthenticationProvider
 
     User user = ctx.user();
     if (user != null) {
-      // proceed with the router
-      postAuthentication(ctx);
-      return;
+      if (mfa != null) {
+        // if we're dealing with MFA, the user principal must include a matching mfa
+        if (mfa.equals(user.get("mfa"))) {
+          // proceed with the router
+          postAuthentication(ctx);
+          return;
+        }
+      } else {
+        // proceed with the router
+        postAuthentication(ctx);
+        return;
+      }
     }
     // before starting any potential async operation here
     // pause parsing the request body. The reason is that
@@ -77,39 +78,26 @@ public abstract class AuthenticationHandlerImpl<T extends AuthenticationProvider
     if (!parseEnded) {
       request.pause();
     }
-    // parse the request in order to extract the credentials object
-    parseCredentials(ctx, res -> {
-      if (res.failed()) {
-        resume(request, parseEnded);
-        processException(ctx, res.cause());
-        return;
-      }
-      // proceed to authN
-      getAuthProvider(ctx).authenticate(res.result(), authN -> {
-        if (authN.succeeded()) {
-          User authenticated = authN.result();
-          ctx.setUser(authenticated);
-          Session session = ctx.session();
-          if (session != null) {
-            // the user has upgraded from unauthenticated to authenticated
-            // session should be upgraded as recommended by owasp
-            session.regenerateId();
-          }
-          // proceed with the router
-          resume(request, parseEnded);
-          postAuthentication(ctx);
-        } else {
-          String header = authenticateHeader(ctx);
-          if (header != null) {
-            ctx.response()
-              .putHeader("WWW-Authenticate", header);
-          }
-          // to allow further processing if needed
-          resume(request, parseEnded);
-          Throwable cause = authN.cause();
-          processException(ctx, cause instanceof HttpStatusException?cause:new HttpStatusException(401, cause));
+    // perform the authentication
+    authenticate(ctx, authN -> {
+      if (authN.succeeded()) {
+        User authenticated = authN.result();
+        ctx.setUser(authenticated);
+        Session session = ctx.session();
+        if (session != null) {
+          // the user has upgraded from unauthenticated to authenticated
+          // session should be upgraded as recommended by owasp
+          session.regenerateId();
         }
-      });
+        // proceed with the router
+        resume(request, parseEnded);
+        postAuthentication(ctx);
+      } else {
+        // to allow further processing if needed
+        resume(request, parseEnded);
+        Throwable cause = authN.cause();
+        processException(ctx, cause);
+      }
     });
   }
 
@@ -125,11 +113,10 @@ public abstract class AuthenticationHandlerImpl<T extends AuthenticationProvider
    * error handling
    */
   protected void processException(RoutingContext ctx, Throwable exception) {
-
     if (exception != null) {
-      if (exception instanceof HttpStatusException) {
-        final int statusCode = ((HttpStatusException) exception).getStatusCode();
-        final String payload = ((HttpStatusException) exception).getPayload();
+      if (exception instanceof HttpException) {
+        final int statusCode = ((HttpException) exception).getStatusCode();
+        final String payload = ((HttpException) exception).getPayload();
 
         switch (statusCode) {
           case 302:
@@ -177,19 +164,5 @@ public abstract class AuthenticationHandlerImpl<T extends AuthenticationProvider
     }
 
     return false;
-  }
-
-  protected AuthenticationProvider getAuthProvider(RoutingContext ctx) {
-    try {
-      AuthenticationProvider provider = ctx.get(AUTH_PROVIDER_CONTEXT_KEY);
-      if (provider != null) {
-        // we're overruling the configured one for this request
-        return provider;
-      }
-    } catch (RuntimeException e) {
-      // bad type, ignore and return default
-    }
-
-    return authProvider;
   }
 }

@@ -19,10 +19,11 @@ package io.vertx.ext.web.handler.impl;
 import io.vertx.core.AsyncResult;
 import io.vertx.core.Future;
 import io.vertx.core.Handler;
+import io.vertx.ext.auth.User;
 import io.vertx.ext.auth.authentication.AuthenticationProvider;
-import io.vertx.ext.auth.authentication.Credentials;
 import io.vertx.ext.web.RoutingContext;
 import io.vertx.ext.web.Session;
+import io.vertx.ext.web.handler.HttpException;
 import io.vertx.ext.web.handler.RedirectAuthHandler;
 
 /**
@@ -41,14 +42,19 @@ public class RedirectAuthHandlerImpl extends AuthenticationHandlerImpl<Authentic
   }
 
   @Override
-  public void parseCredentials(RoutingContext context, Handler<AsyncResult<Credentials>> handler) {
+  public void authenticate(RoutingContext context, Handler<AsyncResult<User>> handler) {
     Session session = context.session();
     if (session != null) {
       // Now redirect to the login url - we'll get redirected back here after successful login
       session.put(returnURLParam, context.request().uri());
-      handler.handle(Future.failedFuture(new HttpStatusException(302, loginRedirectURL)));
+      handler.handle(Future.failedFuture(new HttpException(302, loginRedirectURL)));
     } else {
       handler.handle(Future.failedFuture("No session - did you forget to include a SessionHandler?"));
     }
+  }
+
+  @Override
+  public boolean performsRedirect() {
+    return true;
   }
 }

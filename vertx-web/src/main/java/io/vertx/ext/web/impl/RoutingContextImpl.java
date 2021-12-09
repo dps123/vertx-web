@@ -26,14 +26,16 @@ import io.vertx.core.http.impl.HttpUtils;
 import io.vertx.core.json.JsonArray;
 import io.vertx.core.json.JsonObject;
 import io.vertx.ext.auth.User;
-import io.vertx.ext.web.*;
+import io.vertx.ext.web.FileUpload;
+import io.vertx.ext.web.RoutingContext;
+import io.vertx.ext.web.Session;
 import io.vertx.ext.web.codec.impl.BodyCodecImpl;
-import io.vertx.ext.web.handler.impl.HttpStatusException;
+import io.vertx.ext.web.handler.HttpException;
 import io.vertx.ext.web.handler.impl.UserHolder;
 
 import java.nio.charset.Charset;
 import java.util.*;
-import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicIntegerFieldUpdater;
 
 import static io.vertx.ext.web.handler.impl.SessionHandlerImpl.SESSION_USER_HOLDER_KEY;
 
@@ -42,17 +44,21 @@ import static io.vertx.ext.web.handler.impl.SessionHandlerImpl.SESSION_USER_HOLD
  */
 public class RoutingContextImpl extends RoutingContextImplBase {
 
+  private static final AtomicIntegerFieldUpdater<RoutingContextImpl> HANDLER_SEQ =
+    AtomicIntegerFieldUpdater.newUpdater(RoutingContextImpl.class, "handlerSeq");
+
   private final RouterImpl router;
   private final HttpServerRequest request;
-  private final AtomicInteger handlerSeq = new AtomicInteger();
+
+  private volatile int handlerSeq;
 
   private Map<String, Object> data;
   private Map<String, String> pathParams;
   private MultiMap queryParams;
-  private Map<Integer, Handler<Void>> headersEndHandlers;
-  private Map<Integer, Handler<Void>> bodyEndHandlers;
+  private SparseArray<Handler<Void>> headersEndHandlers;
+  private SparseArray<Handler<Void>> bodyEndHandlers;
   // clean up handlers
-  private Map<Integer, Handler<AsyncResult<Void>>> endHandlers;
+  private SparseArray<Handler<AsyncResult<Void>>> endHandlers;
 
   private Throwable failure;
   private int statusCode = -1;
@@ -73,10 +79,12 @@ public class RoutingContextImpl extends RoutingContextImplBase {
     this.router = router;
     this.request = new HttpServerRequestWrapper(request, router.getAllowForward());
 
-    if (request.path().length() == 0) {
+    final String path = request.path();
+
+    if (path == null || path.length() == 0) {
       // HTTP paths must start with a '/'
       fail(400);
-    } else if (request.path().charAt(0) != '/') {
+    } else if (path.charAt(0) != '/') {
       // For compatiblity we return `Not Found` when a path does not start with `/`
       fail(404);
     }
@@ -167,8 +175,8 @@ public class RoutingContextImpl extends RoutingContextImplBase {
 
   @Override
   public void fail(Throwable t) {
-    if (t instanceof HttpStatusException) {
-      this.fail(((HttpStatusException) t).getStatusCode(), t);
+    if (t instanceof HttpException) {
+      this.fail(((HttpException) t).getStatusCode(), t);
     } else {
       this.fail(500, t);
     }
@@ -178,6 +186,9 @@ public class RoutingContextImpl extends RoutingContextImplBase {
   public void fail(int statusCode, Throwable throwable) {
     this.statusCode = statusCode;
     this.failure = throwable == null ? new NullPointerException() : throwable;
+    if (LOG.isDebugEnabled()) {
+      LOG.debug("RoutingContext failure (" + statusCode + ")", failure);
+    }
     doFail();
   }
 
@@ -195,15 +206,36 @@ public class RoutingContextImpl extends RoutingContextImplBase {
   @Override
   @SuppressWarnings("unchecked")
   public <T> T get(String key) {
-    Object obj = getData().get(key);
-    return (T)obj;
+    if (data == null) {
+      return null;
+    } else {
+      return (T) getData().get(key);
+    }
+  }
+
+  @Override
+  @SuppressWarnings("unchecked")
+  public <T> T get(String key, T defaultValue) {
+    if (data == null) {
+      return defaultValue;
+    } else {
+      Map<String, ?> data = getData();
+      if (data.containsKey(key)) {
+        return (T) data.get(key);
+      } else {
+        return defaultValue;
+      }
+    }
   }
 
   @Override
   @SuppressWarnings("unchecked")
   public <T> T remove(String key) {
-    Object obj = getData().remove(key);
-    return (T)obj;
+    if (data == null) {
+      return null;
+    } else {
+      return (T) getData().remove(key);
+    }
   }
 
   @Override
@@ -488,7 +520,7 @@ public class RoutingContextImpl extends RoutingContextImplBase {
           return queryParams;
         }
       } catch (IllegalArgumentException e) {
-        throw new HttpStatusException(400, "Error while decoding query params", e);
+        throw new HttpException(400, "Error while decoding query params", e);
       }
     }
     return queryParams;
@@ -501,47 +533,47 @@ public class RoutingContextImpl extends RoutingContextImplBase {
     return pathParams;
   }
 
-  private Map<Integer, Handler<Void>> getHeadersEndHandlers() {
+  private SparseArray<Handler<Void>> getHeadersEndHandlers() {
     if (headersEndHandlers == null) {
+      headersEndHandlers = new SparseArray<>();
       // order is important we we should traverse backwards
-      headersEndHandlers = new TreeMap<>(Collections.reverseOrder());
-      response().headersEndHandler(v -> headersEndHandlers.values().forEach(handler -> handler.handle(null)));
+      response().headersEndHandler(v -> headersEndHandlers.forEachInReverseOrder(handler -> handler.handle(null)));
     }
     return headersEndHandlers;
   }
 
-  private Map<Integer, Handler<Void>> getBodyEndHandlers() {
+  private SparseArray<Handler<Void>> getBodyEndHandlers() {
     if (bodyEndHandlers == null) {
+      bodyEndHandlers = new SparseArray<>();
       // order is important we we should traverse backwards
-      bodyEndHandlers = new TreeMap<>(Collections.reverseOrder());
-      response().bodyEndHandler(v -> bodyEndHandlers.values().forEach(handler -> handler.handle(null)));
+      response().bodyEndHandler(v -> bodyEndHandlers.forEachInReverseOrder(handler -> handler.handle(null)));
     }
     return bodyEndHandlers;
   }
 
-  private Map<Integer, Handler<AsyncResult<Void>>> getEndHandlers() {
+  private SparseArray<Handler<AsyncResult<Void>>> getEndHandlers() {
     if (endHandlers == null) {
       // order is important we we should traverse backwards
-      endHandlers = new TreeMap<>(Collections.reverseOrder());
+      endHandlers = new SparseArray<>();
 
       final Handler<Void> endHandler = v -> {
         if (!endHandlerCalled) {
           endHandlerCalled = true;
-          endHandlers.values().forEach(handler -> handler.handle(Future.succeededFuture()));
+          endHandlers.forEachInReverseOrder(handler -> handler.handle(Future.succeededFuture()));
         }
       };
 
       final Handler<Throwable> exceptionHandler = cause -> {
         if (!endHandlerCalled) {
           endHandlerCalled = true;
-          endHandlers.values().forEach(handler -> handler.handle(Future.failedFuture(cause)));
+          endHandlers.forEachInReverseOrder(handler -> handler.handle(Future.failedFuture(cause)));
         }
       };
 
       final Handler<Void> closeHandler = cause -> {
         if (!endHandlerCalled) {
           endHandlerCalled = true;
-          endHandlers.values().forEach(handler -> handler.handle(Future.failedFuture("Connection closed")));
+          endHandlers.forEachInReverseOrder(handler -> handler.handle(Future.failedFuture("Connection closed")));
         }
       };
 
@@ -575,7 +607,7 @@ public class RoutingContextImpl extends RoutingContextImplBase {
   }
 
   private int nextHandlerSeq() {
-    int seq = handlerSeq.incrementAndGet();
+    int seq = HANDLER_SEQ.incrementAndGet(this);
     if (seq == Integer.MAX_VALUE) {
       throw new IllegalStateException("Too many header/body end handlers!");
     }

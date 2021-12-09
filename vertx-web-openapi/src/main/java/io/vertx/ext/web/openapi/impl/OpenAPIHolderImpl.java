@@ -9,6 +9,7 @@ import io.vertx.core.Vertx;
 import io.vertx.core.buffer.Buffer;
 import io.vertx.core.file.FileSystem;
 import io.vertx.core.http.*;
+import io.vertx.core.impl.VertxInternal;
 import io.vertx.core.json.DecodeException;
 import io.vertx.core.json.JsonArray;
 import io.vertx.core.json.JsonObject;
@@ -22,6 +23,7 @@ import io.vertx.json.schema.common.SchemaURNId;
 import io.vertx.json.schema.common.URIUtils;
 import io.vertx.json.schema.draft7.Draft7SchemaParser;
 
+import java.io.File;
 import java.io.IOException;
 import java.net.URI;
 import java.net.URISyntaxException;
@@ -37,8 +39,6 @@ public class OpenAPIHolderImpl implements OpenAPIHolder {
   private final Map<URI, JsonObject> absolutePaths;
   private final HttpClient client;
   private final FileSystem fs;
-  private final SchemaRouter router;
-  private final SchemaParser parser;
   private final Schema openapiSchema;
   private final OpenAPILoaderOptions options;
   private URI initialScope;
@@ -54,8 +54,8 @@ public class OpenAPIHolderImpl implements OpenAPIHolder {
     this.client = client;
     this.fs = fs;
     this.options = options;
-    this.router = SchemaRouter.create(client, fs, options.toSchemaRouterOptions());
-    this.parser = Draft7SchemaParser.create(this.router);
+    SchemaRouter router = SchemaRouter.create(vertx, client, fs, options.toSchemaRouterOptions());
+    SchemaParser parser = Draft7SchemaParser.create(router);
     this.yamlMapper = new YAMLMapper();
     this.openapiSchema = parser.parseFromString(OpenAPI3Utils.openapiSchemaJson);
   }
@@ -70,20 +70,21 @@ public class OpenAPIHolderImpl implements OpenAPIHolder {
         if (URIUtils.isRemoteURI(uri) || uri.isAbsolute()) {
           initialScope = uri;
         } else {
-          initialScope = getResourceAbsoluteURI(uri);
+          initialScope = getResourceAbsoluteURI(vertx, uri);
         }
         initialScopeDirectory = resolveContainingDirPath(initialScope);
       })
       .compose(openapi -> {
         absolutePaths.put(initialScope, openapi); // Circular refs hell!
-        openapiRoot = openapi;
+        openapiRoot = openapi.copy();
         return walkAndSolve(openapi, initialScope).map(openapi);
       })
       .compose(openapi -> {
         JsonObject openapiCopy = openapi.copy();
         deepSubstituteForValidation(openapiCopy, JsonPointer.fromURI(initialScope), new HashMap<>());
         // We need this flattened spec just to validate it
-        return openapiSchema.validateAsync(openapiCopy).map(openapi);
+        return openapiSchema.validateAsync(openapiCopy)
+          .map(openapi);
       });
   }
 
@@ -96,6 +97,7 @@ public class OpenAPIHolderImpl implements OpenAPIHolder {
 
   @Override
   public JsonObject solveIfNeeded(JsonObject obj) {
+    Objects.requireNonNull(obj);
     if (isRef(obj)) {
       JsonObject o = getCached(JsonPointer.fromURI(URI.create(obj.getString("$ref"))));
       if (!o.equals(obj))
@@ -160,11 +162,13 @@ public class OpenAPIHolderImpl implements OpenAPIHolder {
         if (refPointer.isParent(schemaRootScope)) {
           // If it's a circular $ref, I need to remove $ref URI component and replace with newRef = scope - refPointer
           JsonPointer newRef = OpenAPI3Utils.pointerDifference(schemaRootScope, refPointer);
+          // schemaObject.put("x-$ref", schemaObject.getString("$ref"));
           schemaObject.put("$ref", newRef.toURI().toString());
         } else if (refPointer.equals(schemaRootScope)) {
           // If it's a circular $ref that points to schema root, I need to remove $ref URI component and replace with
           // newRef = scope - refPointer
           JsonPointer newRef = JsonPointer.create();
+          // schemaObject.put("x-$ref", schemaObject.getString("$ref"));
           schemaObject.put("$ref", newRef.toURI().toString());
         } else {
           // If it's not a circular $ref, I generate an id, I substitute the stuff and I register the schema to parse
@@ -182,6 +186,7 @@ public class OpenAPIHolderImpl implements OpenAPIHolder {
             // Resolved it's ready to be consumed by the parser
             additionalSchemasToRegister.put(id, resolvedCopy);
           }
+          // schemaObject.put("x-$ref", schemaObject.getString("$ref"));
           // Substitute schema $ref with new one!
           schemaObject.put("$ref", resolved.getString("x-$id"));
         }
@@ -248,15 +253,20 @@ public class OpenAPIHolderImpl implements OpenAPIHolder {
       if (jsonObject.containsKey("$ref")) {
         JsonPointer pointer = JsonPointer.fromURI(URI.create(jsonObject.getString("$ref")));
         if (!pointer.isParent(scope)) { // Check circular refs hell!
+          JsonObject cached = getCached(pointer);
+          if (cached == null) {
+            throw new IllegalStateException("Cannot resolve '" + pointer + "', this may be an invalid " +
+              "reference");
+          }
           if (!originalToSubstitutedMap.containsKey(pointer)) {
-            JsonObject resolved = solveIfNeeded(getCached(pointer)).copy();
+            JsonObject resolved = solveIfNeeded(cached).copy();
             jsonObject.remove("$ref");
             jsonObject.mergeIn(resolved);
             jsonObject.put("x-$ref", pointer.toURI().toString());
             originalToSubstitutedMap.put(pointer, scope);
             deepSubstituteForValidation(jsonObject, pointer, originalToSubstitutedMap);
           } else {
-            JsonObject resolved = solveIfNeeded(getCached(pointer)).copy();
+            JsonObject resolved = solveIfNeeded(cached).copy();
             jsonObject.remove("$ref");
             jsonObject.mergeIn(resolved);
             jsonObject.put("x-$ref", originalToSubstitutedMap.get(pointer).toURI().toString());
@@ -343,19 +353,22 @@ public class OpenAPIHolderImpl implements OpenAPIHolder {
   }
 
   private Future<JsonObject> solveLocalRef(final URI ref) {
-    String filePath = extractPath(ref);
-    return fs.readFile(filePath).compose(buf -> {
-      try {
-        return Future.succeededFuture(buf.toJsonObject());
-      } catch (DecodeException e) {
-        // Maybe it's yaml
+    String filePath = ref.getPath();
+
+    return fs
+      .readFile(filePath)
+      .compose(buf -> {
         try {
-          return Future.succeededFuture(this.yamlToJson(buf));
-        } catch (Exception e1) {
-          return Future.failedFuture(new RuntimeException("File " + filePath + " is not a valid YAML or JSON", e1));
+          return Future.succeededFuture(buf.toJsonObject());
+        } catch (DecodeException e) {
+          // Maybe it's yaml
+          try {
+            return Future.succeededFuture(this.yamlToJson(buf));
+          } catch (Exception e1) {
+            return Future.failedFuture(new RuntimeException("File " + filePath + " is not a valid YAML or JSON", e1));
+          }
         }
-      }
-    });
+      });
   }
 
   private JsonObject yamlToJson(Buffer buf) {
@@ -367,29 +380,30 @@ public class OpenAPIHolderImpl implements OpenAPIHolder {
   }
 
   private URI resolveRefResolutionURIWithoutFragment(URI ref, URI scope) {
-    if (ref.isAbsolute()) return URIUtils.removeFragment(ref);
-    if (ref.getPath() != null && !ref.getPath().isEmpty() && !URIUtils.removeFragment(ref).equals(scope)) {
+    ref = URIUtils.removeFragment(ref);
+    if (ref.isAbsolute()) return ref;
+    if (ref.getPath() != null && !ref.getPath().isEmpty() && !ref.equals(scope)) {
       if (ref.toString().startsWith(initialScopeDirectory))
-        return URIUtils.removeFragment(ref);
-      else
-        return URIUtils.removeFragment(URIUtils.resolvePath(scope, ref.getPath()));
+        return ref;
+      else {
+        URI uri = getResourceAbsoluteURI(vertx, ref);
+        if (uri != null) {
+          return uri;
+        }
+        return URIUtils.resolvePath(scope, ref.getPath());
+      }
     }
     return scope;
-  }
-
-  private String extractPath(URI ref) {
-    return ("jar".equals(ref.getScheme())) ? ref.getSchemeSpecificPart().split("!")[1].substring(1) : ref.getPath();
   }
 
   private Path uriToPath(URI uri) {
     try {
       switch (uri.getScheme()) {
         case "http":
+        case "https":
           return Paths.get(uri.getPath());
         case "file":
           return Paths.get(uri);
-        case "jar":
-          return Paths.get(uri.getSchemeSpecificPart().split("!")[1].substring(1));
         default:
           throw new IllegalArgumentException("unsupported scheme type for '" + uri + "'");
       }
@@ -402,39 +416,33 @@ public class OpenAPIHolderImpl implements OpenAPIHolder {
     return uriToPath(absoluteURI).resolveSibling("").toString();
   }
 
-  protected static URI getResourceAbsoluteURI(URI relativeURI) {
-    // If it's relative, it could be both in filesystem and in the classpath.
-    // Try to figure this out!
-    URI fromClasspath = getResourceAbsoluteURIFromClasspath(relativeURI);
-    if (fromClasspath != null) {
-      return fromClasspath;
-    } else {
-      // Then it must be local fs!
-      return Paths.get(relativeURI.getPath()).toAbsolutePath().toUri();
+  protected static URI getResourceAbsoluteURI(Vertx vertx, URI source) {
+    String path = source.getPath();
+    File resolved = ((VertxInternal) vertx).resolveFile(path);
+    URI uri = null;
+    if (resolved != null) {
+      if (resolved.exists()) {
+        try {
+          resolved = resolved.getCanonicalFile();
+          uri = new URI("file://" + slashify(resolved.getPath(), resolved.isDirectory()));
+        } catch (URISyntaxException | IOException e) {
+          throw new RuntimeException(e);
+        }
+      }
     }
+
+    return uri;
   }
 
-  protected static URI getResourceAbsoluteURIFromClasspath(URI u) {
-    try {
-      return getClassLoader().getResource(u.toString()).toURI();
-    } catch (NullPointerException | URISyntaxException e) {
-      return null;
-    }
-  }
-
-  private static ClassLoader getClassLoader() {
-    ClassLoader cl = Thread.currentThread().getContextClassLoader();
-    if (cl == null) {
-      cl = OpenAPIHolderImpl.class.getClassLoader();
-    }
-    // when running on substratevm (graal) the access to class loaders
-    // is very limited and might be only available from compile time
-    // known classes. (Object is always known, so we do a final attempt
-    // to get it here).
-    if (cl == null) {
-      cl = Object.class.getClassLoader();
-    }
-    return cl;
+  private static String slashify(String path, boolean isDirectory) {
+    String p = path;
+    if (File.separatorChar != '/')
+      p = p.replace(File.separatorChar, '/');
+    if (!p.startsWith("/"))
+      p = "/" + p;
+    if (!p.endsWith("/") && isDirectory)
+      p = p + "/";
+    return p;
   }
 
   public Map<URI, JsonObject> getAbsolutePaths() {

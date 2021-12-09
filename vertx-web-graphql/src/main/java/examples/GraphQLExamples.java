@@ -1,5 +1,5 @@
 /*
- * Copyright 2019 Red Hat, Inc.
+ * Copyright 2021 Red Hat, Inc.
  *
  * Red Hat licenses this file to you under the Apache License, version 2.0
  * (the "License"); you may not use this file except in compliance with the
@@ -29,12 +29,11 @@ import io.vertx.ext.web.Router;
 import io.vertx.ext.web.RoutingContext;
 import io.vertx.ext.web.handler.BodyHandler;
 import io.vertx.ext.web.handler.graphql.*;
+import io.vertx.ext.web.handler.graphql.dataloader.VertxBatchLoader;
 import io.vertx.ext.web.handler.graphql.schema.VertxDataFetcher;
 import io.vertx.ext.web.handler.graphql.schema.VertxPropertyDataFetcher;
-import org.dataloader.BatchLoaderEnvironment;
-import org.dataloader.BatchLoaderWithContext;
-import org.dataloader.DataLoader;
-import org.dataloader.DataLoaderRegistry;
+import io.vertx.ext.web.handler.graphql.ws.GraphQLWSHandler;
+import org.dataloader.*;
 
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
@@ -43,6 +42,7 @@ import java.util.concurrent.CompletionStage;
 /**
  * @author Thomas SEGISMONT
  */
+@SuppressWarnings("unused")
 public class GraphQLExamples {
 
   public void handlerSetup(Router router) {
@@ -162,7 +162,7 @@ public class GraphQLExamples {
   private void routingContextInDataFetchingEnvironment() {
     VertxDataFetcher<List<Link>> dataFetcher = VertxDataFetcher.create((environment, promise) -> {
 
-      RoutingContext routingContext = environment.getContext();
+      RoutingContext routingContext = GraphQLHandler.getRoutingContext(environment.getGraphQlContext());
 
       User user = routingContext.get("user");
 
@@ -172,28 +172,6 @@ public class GraphQLExamples {
   }
 
   private void retrieveLinksPostedBy(User user, Handler<AsyncResult<List<Link>>> handler) {
-  }
-
-  private void customContextInDataFetchingEnvironment(Router router) {
-    VertxDataFetcher<List<Link>> dataFetcher = VertxDataFetcher.create((environment, promise) -> {
-
-      // User as custom context object
-      User user = environment.getContext();
-
-      retrieveLinksPostedBy(user, promise);
-
-    });
-
-    GraphQL graphQL = setupGraphQLJava(dataFetcher);
-
-    // Customize the query context object when setting up the handler
-    GraphQLHandler handler = GraphQLHandler.create(graphQL).queryContext(routingContext -> {
-
-      return routingContext.get("user");
-
-    });
-
-    router.route("/graphql").handler(handler);
   }
 
   private GraphQL setupGraphQLJava(VertxDataFetcher<List<Link>> dataFetcher) {
@@ -215,7 +193,10 @@ public class GraphQLExamples {
   }
 
   public void createBatchLoader() {
-    BatchLoaderWithContext<String, Link> linksBatchLoader = this::retrieveLinksFromBackend;
+    BatchLoaderWithContext<String, Link> linksBatchLoader = (ids, env) -> {
+      // retrieveLinksFromBackend takes a list of ids and returns a CompletionStage for a list of links
+      return retrieveLinksFromBackend(ids, env);
+    };
   }
 
   private CompletionStage<List<Link>> retrieveLinksFromBackend(List<String> ids, BatchLoaderEnvironment environment) {
@@ -223,13 +204,26 @@ public class GraphQLExamples {
   }
 
   public void dataLoaderRegistry(GraphQL graphQL, BatchLoaderWithContext<String, Link> linksBatchLoader) {
-    GraphQLHandler handler = GraphQLHandler.create(graphQL).dataLoaderRegistry(rc -> {
+    GraphQLHandler handler = GraphQLHandler.create(graphQL).beforeExecute(builderWithContext -> {
 
-      DataLoader<String, Link> linkDataLoader = DataLoader.newDataLoader(linksBatchLoader);
+      DataLoader<String, Link> linkDataLoader = DataLoaderFactory.newDataLoader(linksBatchLoader);
 
-      return new DataLoaderRegistry().register("link", linkDataLoader);
+      DataLoaderRegistry dataLoaderRegistry = new DataLoaderRegistry().register("link", linkDataLoader);
+
+      builderWithContext.builder().dataLoaderRegistry(dataLoaderRegistry);
 
     });
+  }
+
+  public void createVertxBatchLoader() {
+    BatchLoaderWithContext<Long, String> commentsBatchLoader = VertxBatchLoader.create((ids, env) -> {
+      // findComments takes a list of ids and returns a Future for a list of links
+      return findComments(ids, env);
+    });
+  }
+
+  private Future<List<String>> findComments(List<Long> ids, BatchLoaderEnvironment env) {
+    return null;
   }
 
   public void addApolloWsHandlerToRouter(Router router) {
@@ -253,4 +247,18 @@ public class GraphQLExamples {
     router.route("/graphql").handler(GraphQLHandler.create(graphQL));
   }
 
+  public void addGraphQLWSHandlerToRouter(Router router, GraphQL graphQL) {
+    router.route("/graphql").handler(GraphQLWSHandler.create(graphQL));
+  }
+
+  public void configureServerForGraphQLWS() {
+    HttpServerOptions httpServerOptions = new HttpServerOptions()
+      .addWebSocketSubProtocol("graphql-transport-ws");
+  }
+
+  public void configureGraphQLWSAndHttpOnSamePath(Router router, GraphQL graphQL) {
+    router.route("/graphql")
+      .handler(GraphQLWSHandler.create(graphQL))
+      .handler(GraphQLHandler.create(graphQL));
+  }
 }

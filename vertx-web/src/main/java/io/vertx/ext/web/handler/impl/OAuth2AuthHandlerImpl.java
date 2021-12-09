@@ -25,6 +25,7 @@ import io.vertx.core.http.HttpMethod;
 import io.vertx.core.impl.logging.Logger;
 import io.vertx.core.impl.logging.LoggerFactory;
 import io.vertx.core.json.JsonObject;
+import io.vertx.ext.auth.User;
 import io.vertx.ext.auth.VertxContextPRNG;
 import io.vertx.ext.auth.authentication.Credentials;
 import io.vertx.ext.auth.authentication.TokenCredentials;
@@ -33,38 +34,40 @@ import io.vertx.ext.auth.oauth2.Oauth2Credentials;
 import io.vertx.ext.web.Route;
 import io.vertx.ext.web.RoutingContext;
 import io.vertx.ext.web.Session;
+import io.vertx.ext.web.handler.HttpException;
 import io.vertx.ext.web.handler.OAuth2AuthHandler;
 import io.vertx.ext.web.impl.Origin;
 
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
-import java.util.ArrayList;
-import java.util.List;
+import java.util.*;
 
 /**
  * @author <a href="http://pmlopes@gmail.com">Paulo Lopes</a>
  */
-public class OAuth2AuthHandlerImpl extends HTTPAuthorizationHandler<OAuth2Auth> implements OAuth2AuthHandler {
+public class OAuth2AuthHandlerImpl extends HTTPAuthorizationHandler<OAuth2Auth> implements OAuth2AuthHandler, ScopedAuthentication<OAuth2AuthHandler> {
 
   private static final Logger LOG = LoggerFactory.getLogger(OAuth2AuthHandlerImpl.class);
 
   private final VertxContextPRNG prng;
-  private final String host;
-  private final String callbackPath;
+  private final Origin callbackURL;
   private final MessageDigest sha256;
 
-  private Route callback;
+  private final List<String> scopes;
+  private final boolean openId;
   private JsonObject extraParams;
-  private final List<String> scopes = new ArrayList<>();
   private String prompt;
   private int pkce = -1;
-
   // explicit signal that tokens are handled as bearer only (meaning, no backend server known)
   private boolean bearerOnly = true;
 
   public OAuth2AuthHandlerImpl(Vertx vertx, OAuth2Auth authProvider, String callbackURL) {
-    super(authProvider, Type.BEARER);
+    this(vertx, authProvider, callbackURL, null);
+  }
+
+  public OAuth2AuthHandlerImpl(Vertx vertx, OAuth2Auth authProvider, String callbackURL, String realm) {
+    super(authProvider, Type.BEARER, realm);
     // get a reference to the prng
     this.prng = VertxContextPRNG.current(vertx);
     // get a reference to the sha-256 digest
@@ -75,17 +78,40 @@ public class OAuth2AuthHandlerImpl extends HTTPAuthorizationHandler<OAuth2Auth> 
     }
     // process callback
     if (callbackURL != null) {
-      final Origin origin = Origin.parse(callbackURL);
-      this.host = origin.toString();
-      this.callbackPath = origin.resource();
+      this.callbackURL = Origin.parse(callbackURL);
     } else {
-      this.host = null;
-      this.callbackPath = null;
+      this.callbackURL = null;
     }
+    // scopes are empty by default
+    this.scopes = new ArrayList<>();
+    this.openId = false;
+  }
+
+  private OAuth2AuthHandlerImpl(OAuth2AuthHandlerImpl base, List<String> scopes) {
+    super(base.authProvider, Type.BEARER, base.realm);
+    this.prng = base.prng;
+    this.callbackURL = base.callbackURL;
+    this.prompt = base.prompt;
+    this.pkce = base.pkce;
+    this.bearerOnly = base.bearerOnly;
+
+    // get a new reference to the sha-256 digest
+    try {
+      sha256 = MessageDigest.getInstance("SHA-256");
+    } catch (NoSuchAlgorithmException e) {
+      throw new IllegalStateException("Cannot get instance of SHA-256 MessageDigest", e);
+    }
+    // state copy
+    if (base.extraParams != null) {
+      extraParams = extraParams.copy();
+    }
+    // apply the new scopes
+    this.scopes = scopes;
+    this.openId = scopes != null && scopes.contains("openid");
   }
 
   @Override
-  public void parseCredentials(RoutingContext context, Handler<AsyncResult<Credentials>> handler) {
+  public void authenticate(RoutingContext context, Handler<AsyncResult<User>> handler) {
     // when the handler is working as bearer only, then the `Authorization` header is required
     parseAuthorization(context, !bearerOnly, parseAuthorization -> {
       if (parseAuthorization.failed()) {
@@ -97,7 +123,7 @@ public class OAuth2AuthHandlerImpl extends HTTPAuthorizationHandler<OAuth2Auth> 
 
       if (token == null) {
         // redirect request to the oauth2 server as we know nothing about this request
-        if (bearerOnly || callback == null) {
+        if (bearerOnly) {
           // it's a failure both cases but the cause is not the same
           handler.handle(Future.failedFuture("callback route is not configured."));
           return;
@@ -106,9 +132,9 @@ public class OAuth2AuthHandlerImpl extends HTTPAuthorizationHandler<OAuth2Auth> 
         // as it would shade the callback route. When a request matches the callback path and has the
         // method GET the exceptional case should not redirect to the oauth2 server as it would become
         // an infinite redirect loop. In this case an exception must be raised.
-        if (context.request().method() == HttpMethod.GET && context.normalizedPath().equals(callback.getPath())) {
+        if (context.request().method() == HttpMethod.GET && context.normalizedPath().equals(callbackURL.resource())) {
           LOG.warn("The callback route is shaded by the OAuth2AuthHandler, ensure the callback route is added BEFORE the OAuth2AuthHandler route!");
-          handler.handle(Future.failedFuture(new HttpStatusException(500, "Infinite redirect loop [oauth2 callback]")));
+          handler.handle(Future.failedFuture(new HttpException(500, "Infinite redirect loop [oauth2 callback]")));
         } else {
           if (context.request().method() != HttpMethod.GET) {
             // we can only redirect GET requests
@@ -122,7 +148,9 @@ public class OAuth2AuthHandlerImpl extends HTTPAuthorizationHandler<OAuth2Auth> 
           String state = null;
           String codeVerifier = null;
 
-          if (context.session() == null) {
+          final Session session = context.session();
+
+          if (session == null) {
             if (pkce > 0) {
               // we can only handle PKCE with a session
               context.fail(500, new IllegalStateException("OAuth2 PKCE requires a session to be present"));
@@ -130,37 +158,52 @@ public class OAuth2AuthHandlerImpl extends HTTPAuthorizationHandler<OAuth2Auth> 
             }
           } else {
             // there's a session we can make this request comply to the Oauth2 spec and add an opaque state
-            context.session()
+            session
               .put("redirect_uri", context.request().uri());
 
             // create a state value to mitigate replay attacks
             state = prng.nextString(6);
             // store the state in the session
-            context.session()
+            session
               .put("state", state);
 
             if (pkce > 0) {
               codeVerifier = prng.nextString(pkce);
               // store the code verifier in the session
-              context.session()
+              session
                 .put("pkce", codeVerifier);
             }
           }
-          handler.handle(Future.failedFuture(new HttpStatusException(302, authURI(redirectUri, state, codeVerifier))));
+          handler.handle(Future.failedFuture(new HttpException(302, authURI(redirectUri, state, codeVerifier))));
         }
       } else {
         // continue
-        handler.handle(Future.succeededFuture(new TokenCredentials(token).setScopes(scopes)));
+        final Credentials credentials =
+          scopes.size() > 0 ? new TokenCredentials(token).setScopes(scopes) : new TokenCredentials(token);
+
+        authProvider.authenticate(credentials, authn -> {
+          if (authn.failed()) {
+            handler.handle(Future.failedFuture(new HttpException(401, authn.cause())));
+          } else {
+            handler.handle(authn);
+          }
+        });
       }
     });
   }
 
   private String authURI(String redirectURL, String state, String codeVerifier) {
-    final JsonObject config = new JsonObject()
+    final JsonObject config = new JsonObject();
+
+    if (extraParams != null) {
+      config.mergeIn(extraParams);
+    }
+
+    config
       .put("state", state != null ? state : redirectURL);
 
-    if (host != null) {
-      config.put("redirect_uri", host + callback.getPath());
+    if (callbackURL != null) {
+      config.put("redirect_uri", callbackURL.href());
     }
 
     if (scopes.size() > 0) {
@@ -180,10 +223,6 @@ public class OAuth2AuthHandlerImpl extends HTTPAuthorizationHandler<OAuth2Auth> 
       }
     }
 
-    if (extraParams != null) {
-      config.mergeIn(extraParams);
-    }
-
     return authProvider.authorizeURL(config);
   }
 
@@ -195,8 +234,14 @@ public class OAuth2AuthHandlerImpl extends HTTPAuthorizationHandler<OAuth2Auth> 
 
   @Override
   public OAuth2AuthHandler withScope(String scope) {
-    this.scopes.add(scope);
-    return this;
+    List<String> updatedScopes = new ArrayList<>(this.scopes);
+    updatedScopes.add(scope);
+    return new OAuth2AuthHandlerImpl(this, updatedScopes);
+  }
+
+  @Override
+  public OAuth2AuthHandler withScopes(List<String> scopes) {
+    return new OAuth2AuthHandlerImpl(this, scopes);
   }
 
   @Override
@@ -220,13 +265,25 @@ public class OAuth2AuthHandlerImpl extends HTTPAuthorizationHandler<OAuth2Auth> 
   @Override
   public OAuth2AuthHandler setupCallback(final Route route) {
 
+    if (callbackURL == null) {
+      // warn that the setup is probably wrong
+      throw new IllegalStateException("OAuth2AuthHandler was created without a origin/callback URL");
+    }
+
+    final String routePath = route.getPath();
+
+    if (routePath == null) {
+      // warn that the setup is probably wrong
+      throw new IllegalStateException("OAuth2AuthHandler callback route created without a path");
+    }
+
+    final String callbackPath = callbackURL.resource();
+
     if (callbackPath != null && !"".equals(callbackPath)) {
-      if (!callbackPath.equals(route.getPath())) {
+      if (!callbackPath.endsWith(routePath)) {
         if (LOG.isWarnEnabled()) {
-          LOG.warn("route path changed to match callback URL");
+          LOG.warn("callback route doesn't match OAuth2AuthHandler origin configuration");
         }
-        // no matter what path was provided we will make sure it is the correct one
-        route.path(callbackPath);
       }
     }
 
@@ -271,8 +328,7 @@ public class OAuth2AuthHandlerImpl extends HTTPAuthorizationHandler<OAuth2Auth> 
       }
 
       final Oauth2Credentials credentials = new Oauth2Credentials()
-        .setCode(code)
-        .setExtra(extraParams);
+        .setCode(code);
 
       // the state that was passed to the IdP server. The state can be
       // an opaque random string (to protect against replay attacks)
@@ -287,11 +343,12 @@ public class OAuth2AuthHandlerImpl extends HTTPAuthorizationHandler<OAuth2Auth> 
       }
 
       final String resource;
+      final Session session = ctx.session();
 
-      if (ctx.session() != null) {
+      if (session != null) {
         // validate the state. Here we are a bit lenient, if there is no session
         // we always assume valid, however if there is session it must match
-        String ctxState = ctx.session().remove("state");
+        String ctxState = session.remove("state");
         // if there's a state in the context they must match
         if (!state.equals(ctxState)) {
           // forbidden, the state is not valid (this is a replay attack)
@@ -301,46 +358,23 @@ public class OAuth2AuthHandlerImpl extends HTTPAuthorizationHandler<OAuth2Auth> 
 
         // remove the code verifier, from the session as it will be trade for the
         // token during the final leg of the oauth2 handshake
-        String codeVerifier = ctx.session().remove("pkce");
-        if (codeVerifier != null) {
-          // if there are already extras by the end user
-          // we make a copy to avoid leaking the verifier
-          JsonObject extras = credentials.getExtra();
-          if (extras != null) {
-            credentials
-              .setExtra(new JsonObject()
-                .mergeIn(extras)
-                .put("code_verifier", codeVerifier));
-          } else {
-            credentials
-              .setExtra(new JsonObject()
-                .put("code_verifier", codeVerifier));
-          }
-        }
+        String codeVerifier = session.remove("pkce");
+        credentials.setCodeVerifier(codeVerifier);
         // state is valid, extract the redirectUri from the session
-        resource = ctx.session().get("redirect_uri");
+        resource = session.get("redirect_uri");
       } else {
         resource = state;
       }
 
-      if (host == null) {
-        // warn that the setup is wrong, if this route is called
-        // we most likely needed a host to redirect to
-        if (LOG.isWarnEnabled()) {
-          LOG.warn("Cannot compute: 'redirect_uri' variable. OAuth2AuthHandler was created without a origin/callback URL.");
-        }
-      } else {
-        // The valid callback URL set in your IdP application settings.
-        // This must exactly match the redirect_uri passed to the authorization URL in the previous step.
-        credentials.setRedirectUri(host + route.getPath());
-      }
+      // The valid callback URL set in your IdP application settings.
+      // This must exactly match the redirect_uri passed to the authorization URL in the previous step.
+      credentials.setRedirectUri(callbackURL.href());
 
       authProvider.authenticate(credentials, res -> {
         if (res.failed()) {
           ctx.fail(res.cause());
         } else {
           ctx.setUser(res.result());
-          Session session = ctx.session();
           String location = resource != null ? resource : "/";
           if (session != null) {
             // the user has upgraded from unauthenticated to authenticated
@@ -373,8 +407,79 @@ public class OAuth2AuthHandlerImpl extends HTTPAuthorizationHandler<OAuth2Auth> 
     // the redirect handler has been setup so we can process this
     // handler has full oauth2
     bearerOnly = false;
-    callback = route;
-
     return this;
+  }
+
+  private static final Set<String> OPENID_SCOPES = new HashSet<>();
+
+  static {
+    OPENID_SCOPES.add("openid");
+    OPENID_SCOPES.add("profile");
+    OPENID_SCOPES.add("email");
+    OPENID_SCOPES.add("phone");
+    OPENID_SCOPES.add("offline");
+  }
+
+  /**
+   * The default behavior for post-authentication
+   */
+  @Override
+  public void postAuthentication(RoutingContext ctx) {
+    // the user is authenticated, however the user may not have all the required scopes
+    if (scopes != null && scopes.size() > 0) {
+      final User user = ctx.user();
+      if (user == null) {
+        // bad state
+        ctx.fail(403, new IllegalStateException("no user in the context"));
+        return;
+      }
+
+      if (user.principal().containsKey("scope")) {
+        final String scopes = user.principal().getString("scope");
+        if (scopes != null) {
+          // user principal contains scope, a basic assertion is required to ensure that
+          // the scopes present match the required ones
+          for (String scope : this.scopes) {
+            // do not assert openid scopes if openid is active
+            if (openId && OPENID_SCOPES.contains(scope)) {
+              continue;
+            }
+
+            int idx = scopes.indexOf(scope);
+            if (idx != -1) {
+              // match, but is it valid?
+              if (
+                (idx != 0 && scopes.charAt(idx -1) != ' ') ||
+                  (idx + scope.length() != scopes.length() && scopes.charAt(idx + scope.length()) != ' ')) {
+                // invalid scope assignment
+                ctx.fail(403, new IllegalStateException("principal scope != handler scopes"));
+                return;
+              }
+            } else {
+              // invalid scope assignment
+              ctx.fail(403, new IllegalStateException("principal scope != handler scopes"));
+              return;
+            }
+          }
+        }
+      }
+    }
+    ctx.next();
+  }
+
+  @Override
+  public boolean performsRedirect() {
+    // depending on the time this method is invoked
+    // we can deduct with more accuracy if a redirect is possible or not
+    if (!bearerOnly) {
+      // we know that a redirect is definitely possible
+      // as the callback handler has been created
+      return true;
+    } else {
+      // the callback hasn't been mounted so we need to assume
+      // that if no callbackURL is provided, then there isn't
+      // a redirect happening in this application
+      return callbackURL != null;
+    }
   }
 }

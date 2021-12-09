@@ -23,13 +23,13 @@ import io.vertx.core.MultiMap;
 import io.vertx.core.http.HttpHeaders;
 import io.vertx.core.http.HttpMethod;
 import io.vertx.core.http.HttpServerRequest;
-import io.vertx.core.http.HttpServerResponse;
+import io.vertx.ext.auth.User;
 import io.vertx.ext.auth.authentication.AuthenticationProvider;
-import io.vertx.ext.auth.authentication.Credentials;
 import io.vertx.ext.auth.authentication.UsernamePasswordCredentials;
 import io.vertx.ext.web.RoutingContext;
 import io.vertx.ext.web.Session;
 import io.vertx.ext.web.handler.FormLoginHandler;
+import io.vertx.ext.web.handler.HttpException;
 import io.vertx.ext.web.impl.RoutingContextInternal;
 
 /**
@@ -76,7 +76,7 @@ public class FormLoginHandlerImpl extends AuthenticationHandlerImpl<Authenticati
   }
 
   @Override
-  public void parseCredentials(RoutingContext context, Handler<AsyncResult<Credentials>> handler) {
+  public void authenticate(RoutingContext context, Handler<AsyncResult<User>> handler) {
     HttpServerRequest req = context.request();
     if (req.method() != HttpMethod.POST) {
       handler.handle(Future.failedFuture(BAD_METHOD)); // Must be a POST
@@ -90,7 +90,13 @@ public class FormLoginHandlerImpl extends AuthenticationHandlerImpl<Authenticati
         if (username == null || password == null) {
           handler.handle(Future.failedFuture(BAD_REQUEST));
         } else {
-          handler.handle(Future.succeededFuture(new UsernamePasswordCredentials(username, password)));
+          authProvider.authenticate(new UsernamePasswordCredentials(username, password), authn -> {
+            if (authn.failed()) {
+              handler.handle(Future.failedFuture(new HttpException(401, authn.cause())));
+            } else {
+              handler.handle(authn);
+            }
+          });
         }
       }
     }
@@ -104,7 +110,7 @@ public class FormLoginHandlerImpl extends AuthenticationHandlerImpl<Authenticati
       String returnURL = session.remove(returnURLParam);
       if (returnURL != null) {
         // Now redirect back to the original url
-        doRedirect(req.response(), returnURL);
+        ctx.redirect(returnURL);
         return;
       }
     }
@@ -113,17 +119,14 @@ public class FormLoginHandlerImpl extends AuthenticationHandlerImpl<Authenticati
       // Redirect to the default logged in OK page - this would occur
       // if the user logged in directly at this URL without being redirected here first from another
       // url
-      doRedirect(req.response(), directLoggedInOKURL);
+      ctx.redirect(directLoggedInOKURL);
     } else {
       // Just show a basic page
-      req.response().end(DEFAULT_DIRECT_LOGGED_IN_OK_PAGE);
+      req.response()
+        .putHeader(HttpHeaders.CONTENT_TYPE, "text/html; charset=utf-8")
+        .end(DEFAULT_DIRECT_LOGGED_IN_OK_PAGE);
     }
   }
 
-  private void doRedirect(HttpServerResponse response, String url) {
-    response.putHeader(HttpHeaders.LOCATION, url).setStatusCode(302).end();
-  }
-
-  private static final String DEFAULT_DIRECT_LOGGED_IN_OK_PAGE = "" +
-    "<html><body><h1>Login successful</h1></body></html>";
+  private static final String DEFAULT_DIRECT_LOGGED_IN_OK_PAGE = "<html><body><h1>Login successful</h1></body></html>";
 }

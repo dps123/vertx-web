@@ -20,16 +20,14 @@ import io.netty.handler.codec.http.HttpResponseStatus;
 import io.vertx.core.*;
 import io.vertx.core.buffer.Buffer;
 import io.vertx.core.http.*;
-import io.vertx.core.json.Json;
+import io.vertx.core.http.impl.HttpServerRequestInternal;
 import io.vertx.core.json.JsonObject;
 import io.vertx.core.net.SocketAddress;
 import io.vertx.ext.web.handler.ResponseContentTypeHandler;
-import io.vertx.test.core.Repeat;
 import org.junit.Test;
 
 import java.io.IOException;
 import java.net.URLEncoder;
-import java.nio.charset.StandardCharsets;
 import java.nio.charset.StandardCharsets;
 import java.util.*;
 import java.util.concurrent.CountDownLatch;
@@ -103,7 +101,7 @@ public class RouterTest extends WebTestBase {
       HttpMethod.GET,
       "/hello",
       null,
-      res -> assertEquals("application/json; charset=utf-8", res.getHeader("Content-Type")),
+      res -> assertEquals("application/json", res.getHeader("Content-Type")),
       200,
       "OK",
       "{\"hello\":\"world\"}");
@@ -194,6 +192,17 @@ public class RouterTest extends WebTestBase {
     testRequest(HttpMethod.GET, "/foo", 200, "OK");
     testRequest(HttpMethod.GET, "/foo/", 200, "OK");
     testRequest(HttpMethod.GET, "/foo//", 200, "OK");
+  }
+
+  @Test
+  public void testSlashPathsWithParams() throws Exception {
+    router.route("/foo/:id").handler(rc -> {
+      rc.response().end();
+    });
+    testRequest(HttpMethod.GET, "/foo/123", 200, "OK");
+    testRequest(HttpMethod.GET, "/foo/123/", 200, "OK");
+    testRequest(HttpMethod.GET, "/foo//123/", 200, "OK");
+    testRequest(HttpMethod.GET, "/foo//123//", 200, "OK");
   }
 
   @Test
@@ -909,6 +918,13 @@ public class RouterTest extends WebTestBase {
 
   private void testPattern(String pathRoot, String expected) throws Exception {
     testRequest(HttpMethod.GET, pathRoot, 200, expected);
+    testRequest(HttpMethod.GET, pathRoot + "/", 200, expected);
+    testRequest(HttpMethod.GET, pathRoot + "/wibble", 404, "Not Found");
+    testRequest(HttpMethod.GET, pathRoot + "/wibble/blibble", 404, "Not Found");
+  }
+
+  private void testPatternStrict(String pathRoot, String expected) throws Exception {
+    testRequest(HttpMethod.GET, pathRoot, 200, expected);
     testRequest(HttpMethod.GET, pathRoot + "/", 404, "Not Found");
     testRequest(HttpMethod.GET, pathRoot + "/wibble", 404, "Not Found");
     testRequest(HttpMethod.GET, pathRoot + "/wibble/blibble", 404, "Not Found");
@@ -940,7 +956,7 @@ public class RouterTest extends WebTestBase {
       MultiMap params = rc.request().params();
       rc.response().setStatusMessage(params.get("param0") + params.get("param1")).end();
     });
-    testPattern("/dog/cat", "dogcat");
+    testPatternStrict("/dog/cat", "dogcat");
   }
 
   @Test
@@ -949,7 +965,7 @@ public class RouterTest extends WebTestBase {
       MultiMap params = rc.request().params();
       rc.response().setStatusMessage(params.get("param0") + params.get("param1")).end();
     });
-    testPattern("/dog/cat", "dogcat");
+    testPatternStrict("/dog/cat", "dogcat");
   }
 
   @Test
@@ -958,7 +974,7 @@ public class RouterTest extends WebTestBase {
       MultiMap params = rc.request().params();
       rc.response().setStatusMessage(params.get("param0") + params.get("param1")).end();
     });
-    testPattern("/dog/cat", "dogcat");
+    testPatternStrict("/dog/cat", "dogcat");
     testRequest(HttpMethod.POST, "/dog/cat", HttpResponseStatus.METHOD_NOT_ALLOWED);
   }
 
@@ -968,13 +984,13 @@ public class RouterTest extends WebTestBase {
       MultiMap params = rc.request().params();
       rc.response().setStatusMessage(params.get("param0") + params.get("param1")).end();
     });
-    testPattern("/dog/cat/blah", "dogcat");
+    testPatternStrict("/dog/cat/blah", "dogcat");
   }
 
   @Test
   public void testRegex3() throws Exception {
     router.routeWithRegex(".*foo.txt").handler(rc -> rc.response().setStatusMessage("ok").end());
-    testPattern("/dog/cat/foo.txt", "ok");
+    testPatternStrict("/dog/cat/foo.txt", "ok");
     testRequest(HttpMethod.POST, "/dog/cat/foo.bar", 404, "Not Found");
   }
 
@@ -984,7 +1000,7 @@ public class RouterTest extends WebTestBase {
       MultiMap params = rc.request().params();
       rc.response().setStatusMessage(params.get("name") + params.get("surname")).end();
     });
-    testPattern("/joe/doe", "joedoe");
+    testPatternStrict("/joe/doe", "joedoe");
   }
 
   @Test
@@ -993,7 +1009,7 @@ public class RouterTest extends WebTestBase {
       MultiMap params = rc.request().params();
       rc.response().setStatusMessage(params.get("param0") + params.get("param1")).end();
     });
-    testPattern("/joe/doe", "joedoe");
+    testPatternStrict("/joe/doe", "joedoe");
   }
 
   @Test
@@ -2616,7 +2632,7 @@ public class RouterTest extends WebTestBase {
     CountDownLatch latch = new CountDownLatch(2);
     for (int i = 0; i < 2; i++) {
       vertx.executeBlocking(future -> {
-        HttpServerRequest request = mock(HttpServerRequest.class);
+        HttpServerRequest request = mock(HttpServerRequestInternal.class);
         HttpServerResponse response = mock(HttpServerResponse.class);
         when(request.method()).thenReturn(HttpMethod.GET);
         when(request.scheme()).thenReturn("http");
@@ -2953,7 +2969,7 @@ public class RouterTest extends WebTestBase {
       .setRegexGroupsNames(Arrays.asList("id", "format"))
       .handler(rc -> {
         MultiMap params = rc.request().params();
-        System.out.println(params);
+        assertNotNull(params.get("id"));
         rc.end();
       });
     testRequest(HttpMethod.GET, "/help/abcd/", 200, "OK");
@@ -2977,5 +2993,25 @@ public class RouterTest extends WebTestBase {
     testRequest(HttpMethod.GET, "/q/swaggery", 404, "Not Found");
     testRequest(HttpMethod.GET, "/q/swagger/", 200, "OK");
     testRequest(HttpMethod.GET, "/q/swagger/index.html", 200, "OK");
+  }
+
+  @Test
+  public void testSpecialParams() throws Exception {
+    router.route()
+      .handler(ctx -> {
+        ctx.end();
+      });
+
+    testRequest(HttpMethod.GET, "/?a=b&c:d=e", 200, "OK");
+  }
+
+  @Test
+  public void testSpecialParams2() throws Exception {
+    router.route()
+      .handler(ctx -> {
+        ctx.end();
+      });
+
+    testRequest(HttpMethod.GET, "/?a=a&A=b", 200, "OK");
   }
 }

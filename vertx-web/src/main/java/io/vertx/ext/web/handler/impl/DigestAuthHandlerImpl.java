@@ -24,13 +24,14 @@ import io.vertx.core.impl.logging.Logger;
 import io.vertx.core.impl.logging.LoggerFactory;
 import io.vertx.core.shareddata.LocalMap;
 import io.vertx.core.shareddata.Shareable;
+import io.vertx.ext.auth.User;
 import io.vertx.ext.auth.VertxContextPRNG;
-import io.vertx.ext.auth.authentication.Credentials;
 import io.vertx.ext.auth.htdigest.HtdigestAuth;
 import io.vertx.ext.auth.htdigest.HtdigestCredentials;
 import io.vertx.ext.web.RoutingContext;
 import io.vertx.ext.web.Session;
 import io.vertx.ext.web.handler.DigestAuthHandler;
+import io.vertx.ext.web.handler.HttpException;
 
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
@@ -38,6 +39,8 @@ import java.util.HashSet;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.Set;
+
+import static io.vertx.ext.auth.impl.Codec.base16Encode;
 
 /**
  * @author <a href="mailto:plopes@redhat.com">Paulo Lopes</a>
@@ -89,14 +92,14 @@ public class DigestAuthHandlerImpl extends HTTPAuthorizationHandler<HtdigestAuth
   private long lastExpireRun;
 
   public DigestAuthHandlerImpl(Vertx vertx, HtdigestAuth authProvider, long nonceExpireTimeout) {
-    super(authProvider, authProvider.realm(), Type.DIGEST);
+    super(authProvider, Type.DIGEST, authProvider.realm());
     random = VertxContextPRNG.current(vertx);
     nonces = vertx.sharedData().getLocalMap(DEFAULT_NONCE_MAP_NAME);
     this.nonceExpireTimeout = nonceExpireTimeout;
   }
 
   @Override
-  public void parseCredentials(RoutingContext context, Handler<AsyncResult<Credentials>> handler) {
+  public void authenticate(RoutingContext context, Handler<AsyncResult<User>> handler) {
     // clean up nonce
     long now = System.currentTimeMillis();
     if (now - lastExpireRun > nonceExpireTimeout / 2) {
@@ -113,7 +116,7 @@ public class DigestAuthHandlerImpl extends HTTPAuthorizationHandler<HtdigestAuth
       lastExpireRun = now;
     }
 
-    parseAuthorization(context, false, parseAuthorization -> {
+    parseAuthorization(context, parseAuthorization -> {
       if (parseAuthorization.failed()) {
         handler.handle(Future.failedFuture(parseAuthorization.cause()));
         return;
@@ -196,6 +199,7 @@ public class DigestAuthHandlerImpl extends HTTPAuthorizationHandler<HtdigestAuth
 
       } catch (RuntimeException e) {
         handler.handle(Future.failedFuture(e));
+        return;
       }
 
       // validate the opaque value
@@ -211,7 +215,13 @@ public class DigestAuthHandlerImpl extends HTTPAuthorizationHandler<HtdigestAuth
       // we now need to pass some extra info
       authInfo.setMethod(context.request().method().name());
 
-      handler.handle(Future.succeededFuture(authInfo));
+      authProvider.authenticate(authInfo, authn -> {
+        if (authn.failed()) {
+          handler.handle(Future.failedFuture(new HttpException(401, authn.cause())));
+        } else {
+          handler.handle(authn);
+        }
+      });
     });
   }
 
@@ -240,20 +250,8 @@ public class DigestAuthHandlerImpl extends HTTPAuthorizationHandler<HtdigestAuth
     return "Digest realm=\"" + realm + "\", qop=\"auth\", nonce=\"" + nonce + "\", opaque=\"" + opaque + "\"";
   }
 
-  private final static char[] hexArray = "0123456789abcdef".toCharArray();
-
-  private static String bytesToHex(byte[] bytes) {
-    char[] hexChars = new char[bytes.length * 2];
-    for (int j = 0; j < bytes.length; j++) {
-      int v = bytes[j] & 0xFF;
-      hexChars[j * 2] = hexArray[v >>> 4];
-      hexChars[j * 2 + 1] = hexArray[v & 0x0F];
-    }
-    return new String(hexChars);
-  }
-
   private static synchronized String md5(byte[] payload) {
     MD5.reset();
-    return bytesToHex(MD5.digest(payload));
+    return base16Encode(MD5.digest(payload));
   }
 }

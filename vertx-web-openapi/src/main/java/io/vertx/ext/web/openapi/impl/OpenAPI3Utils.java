@@ -8,6 +8,7 @@ import io.vertx.ext.web.openapi.OpenAPIHolder;
 import io.vertx.ext.web.openapi.RouterBuilderException;
 
 import java.lang.reflect.Method;
+import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -60,17 +61,16 @@ class OpenAPI3Utils {
 
   protected static String resolveContentTypeRegex(String listContentTypes) {
     // Check if it's list
-    if (listContentTypes.contains(",")) {
-      StringBuilder stringBuilder = new StringBuilder();
-      String[] contentTypes = listContentTypes.split(",");
-      for (String contentType : contentTypes)
-        stringBuilder.append(Pattern.quote(contentType.trim())).append("|");
-      stringBuilder.deleteCharAt(stringBuilder.length() - 1);
-      return stringBuilder.toString();
-    } else if (listContentTypes.trim().endsWith("/*")) {
-      return listContentTypes.trim().substring(0, listContentTypes.indexOf("/*")) + "\\/.*";
-    }
-    return Pattern.quote(listContentTypes);
+    return Arrays.stream(listContentTypes.split(","))
+      .map(String::trim)
+      .map(pattern -> {
+        int wildcardIndex = pattern.indexOf("/*");
+        if (wildcardIndex != -1) {
+          return Pattern.quote(pattern.substring(0, wildcardIndex + 1)) + ".*";
+        }
+        return Pattern.quote(pattern);
+      })
+      .collect(Collectors.joining("|"));
   }
 
   /* This function resolve all properties inside an allOf array of schemas */
@@ -179,16 +179,16 @@ class OpenAPI3Utils {
     );
   }
 
-  protected static JsonObject generateFakeSchema(JsonObject schema, OpenAPIHolder holder) {
-    JsonObject fakeSchema = holder.solveIfNeeded(schema).copy();
+  protected static JsonObject generateFakeSchema(JsonObject originalSchema, OpenAPIHolder holder) {
+    JsonObject fakeSchema = holder.solveIfNeeded(originalSchema).copy();
     String combinatorKeyword = fakeSchema.containsKey("allOf") ? "allOf" : fakeSchema.containsKey("anyOf") ? "anyOf"
       : fakeSchema.containsKey("oneOf") ? "oneOf" : null;
     if (combinatorKeyword != null) {
       JsonArray schemasArray = fakeSchema.getJsonArray(combinatorKeyword);
       JsonArray processedSchemas = new JsonArray();
       for (int i = 0; i < schemasArray.size(); i++) {
-        JsonObject innerSchema = holder.solveIfNeeded(schemasArray.getJsonObject(i));
-        processedSchemas.add(innerSchema.copy());
+        JsonObject innerSchema = holder.solveIfNeeded(schemasArray.getJsonObject(i)).copy();
+        processedSchemas.add(innerSchema);
         schemasArray.getJsonObject(i).mergeIn(innerSchema);
         if ("object".equals(innerSchema.getString("type")) || innerSchema.containsKey("properties"))
           fakeSchema = fakeSchema.mergeIn(innerSchema, true);
@@ -199,7 +199,7 @@ class OpenAPI3Utils {
     if (fakeSchema.containsKey("properties")) {
       JsonObject propsObj = fakeSchema.getJsonObject("properties");
       for (String key : propsObj.fieldNames()) {
-        propsObj.put(key, holder.solveIfNeeded(propsObj.getJsonObject(key)));
+        propsObj.put(key, holder.solveIfNeeded(propsObj.getJsonObject(key)).copy());
       }
     }
     if (fakeSchema.containsKey("items")) {

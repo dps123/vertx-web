@@ -4,8 +4,9 @@ import io.vertx.core.Handler;
 import io.vertx.core.Vertx;
 import io.vertx.core.eventbus.DeliveryOptions;
 import io.vertx.core.http.HttpClient;
-import io.vertx.core.http.HttpClientResponse;
 import io.vertx.core.http.HttpMethod;
+import io.vertx.core.impl.logging.Logger;
+import io.vertx.core.impl.logging.LoggerFactory;
 import io.vertx.core.json.JsonObject;
 import io.vertx.core.json.pointer.JsonPointer;
 import io.vertx.ext.web.Route;
@@ -37,14 +38,13 @@ public class OpenAPI3RouterBuilderImpl implements RouterBuilder {
   private final static String OPENAPI_EXTENSION_METHOD_NAME = "method";
 
   private final static Handler<RoutingContext> NOT_IMPLEMENTED_HANDLER = rc -> rc.fail(501);
+  private static final Logger LOG = LoggerFactory.getLogger(OpenAPI3RouterBuilderImpl.class);
 
   private static Handler<RoutingContext> generateNotAllowedHandler(List<HttpMethod> allowedMethods) {
     return rc -> {
       rc.addHeadersEndHandler(v ->
-          rc.response().headers().add("Allow", String.join(", ",
-            allowedMethods.stream().map(HttpMethod::toString).collect(Collectors.toList())
-          ))
-        );
+        rc.response().headers().add("Allow", allowedMethods.stream().map(HttpMethod::toString).collect(Collectors.joining(", ")))
+      );
       rc.fail(405);
     };
   }
@@ -67,7 +67,7 @@ public class OpenAPI3RouterBuilderImpl implements RouterBuilder {
     this.options = new RouterBuilderOptions();
     this.bodyHandler = BodyHandler.create();
     this.globalHandlers = new ArrayList<>();
-    this.schemaRouter = SchemaRouter.create(client, vertx.fileSystem(), options.toSchemaRouterOptions());
+    this.schemaRouter = SchemaRouter.create(vertx, client, vertx.fileSystem(), options.toSchemaRouterOptions());
     this.schemaParser = OpenAPI3SchemaParser.create(schemaRouter);
     // Noop binary format validator to fix bad multipart form
     this.schemaParser.withStringFormatValidator("binary", v -> true);
@@ -153,6 +153,11 @@ public class OpenAPI3RouterBuilderImpl implements RouterBuilder {
   }
 
   @Override
+  public SecurityScheme securityHandler(String securitySchemeName) {
+    return new SecuritySchemeImpl(this, securitySchemeName);
+  }
+
+  @Override
   public RouterBuilder securityHandler(String securitySchemaName, AuthenticationHandler handler) {
     Objects.requireNonNull(securitySchemaName);
     Objects.requireNonNull(handler);
@@ -162,7 +167,7 @@ public class OpenAPI3RouterBuilderImpl implements RouterBuilder {
 
   @Override
   public List<Operation> operations() {
-    return this.operations.entrySet().stream().map(Map.Entry::getValue).collect(Collectors.toList());
+    return new ArrayList<>(this.operations.values());
   }
 
   @Override
@@ -222,7 +227,7 @@ public class OpenAPI3RouterBuilderImpl implements RouterBuilder {
           if (address == null)
             throw RouterBuilderException.createWrongExtension("Extension " + OPENAPI_EXTENSION + " must define " + OPENAPI_EXTENSION_ADDRESS); //TODO specify where
           if (methodName == null)
-            operation.mountRouteToService(address, opEntry.getKey());
+            operation.mountRouteToService(address, opEntry.getKey(), new DeliveryOptions(sanitizedMap));
           else
             operation.mountRouteToService(address, methodName, new DeliveryOptions(sanitizedMap));
         } else {
@@ -331,27 +336,27 @@ public class OpenAPI3RouterBuilderImpl implements RouterBuilder {
         .getJsonObject("responses", new JsonObject())
         .stream()
         .map(Map.Entry::getValue)
-        .map(j -> (JsonObject)j)
+        .map(j -> (JsonObject) j)
         .flatMap(j -> j.getJsonObject("content", new JsonObject()).fieldNames().stream())
         .collect(Collectors.toSet());
 
       // for (String ct : consumes)
-        // route.consumes(ct);
+      // route.consumes(ct);
       // TODO Do we really need this?
 
       for (String ct : produces)
         route.produces(ct);
 
       if (!consumes.isEmpty())
-        ((RouteImpl)route).setEmptyBodyPermittedWithConsumes(!validationHandler.isBodyRequired());
+        ((RouteImpl) route).setEmptyBodyPermittedWithConsumes(!validationHandler.isBodyRequired());
 
       if (options.isMountResponseContentTypeHandler() && produces.size() != 0)
         route.handler(ResponseContentTypeHandler.create());
 
       route.setRegexGroupsNames(new ArrayList<>(pathResolver.getMappedGroups().values()));
-      for (Handler handler : handlersToLoad)
+      for (Handler<RoutingContext> handler : handlersToLoad)
         route.handler(handler);
-      for (Handler failureHandler : failureHandlersToLoad)
+      for (Handler<RoutingContext> failureHandler : failureHandlersToLoad)
         route.failureHandler(failureHandler);
     }
 

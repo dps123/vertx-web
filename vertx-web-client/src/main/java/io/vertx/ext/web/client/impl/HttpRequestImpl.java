@@ -36,6 +36,7 @@ import io.vertx.ext.web.multipart.MultipartForm;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 
 /**
  * @author <a href="mailto:julien@julienviet.com">Julien Viet</a>
@@ -96,11 +97,13 @@ public class HttpRequestImpl<T> implements HttpRequest<T> {
     this.timeout = other.timeout;
     this.uri = other.uri;
     this.headers = other.headers != null ? HttpHeaders.headers().addAll(other.headers) : HttpHeaders.headers();
-    this.params = other.params != null ? HttpHeaders.headers().addAll(other.params) : null;
+    this.params = other.params != null ? MultiMap.caseInsensitiveMultiMap().addAll(other.params) : null;
     this.codec = other.codec;
     this.followRedirects = other.followRedirects;
     this.ssl = other.ssl;
     this.multipartMixed = other.multipartMixed;
+    this.virtualHost = other.virtualHost;
+    this.expectations = other.expectations != null ? new ArrayList<>(other.expectations) : null;
   }
 
   @Override
@@ -249,7 +252,7 @@ public class HttpRequestImpl<T> implements HttpRequest<T> {
   @Override
   public MultiMap queryParams() {
     if (params == null) {
-      params = HttpHeaders.headers();
+      params = MultiMap.caseInsensitiveMultiMap();
     }
     if (params.isEmpty()) {
       int idx = uri.indexOf('?');
@@ -300,7 +303,17 @@ public class HttpRequestImpl<T> implements HttpRequest<T> {
 
   @Override
   public void sendForm(MultiMap body, Handler<AsyncResult<HttpResponse<T>>> handler) {
-    send("application/x-www-form-urlencoded", body, handler);
+    sendForm(body, "UTF-8", handler);
+  }
+
+  @Override
+  public void sendForm(MultiMap body, String charset, Handler<AsyncResult<HttpResponse<T>>> handler) {
+    MultipartForm parts = MultipartForm.create();
+    for (Map.Entry<String, String> attribute : body) {
+      parts.attribute(attribute.getKey(), attribute.getValue());
+    }
+    parts.setCharset(charset);
+    send("application/x-www-form-urlencoded", parts, handler);
   }
 
   @Override
@@ -308,7 +321,7 @@ public class HttpRequestImpl<T> implements HttpRequest<T> {
     send("multipart/form-data", body, handler);
   }
 
-  private void send(String contentType, Object body, Handler<AsyncResult<HttpResponse<T>>> handler) {
+  void send(String contentType, Object body, Handler<AsyncResult<HttpResponse<T>>> handler) {
     HttpContext<T> ctx = client.createContext(handler);
     ctx.prepareRequest(this, contentType, body);
   }

@@ -27,12 +27,15 @@ import io.vertx.ext.web.multipart.MultipartForm;
 import io.vertx.test.core.Repeat;
 import io.vertx.test.core.TestUtils;
 import io.vertx.test.tls.Cert;
-
 import org.junit.Test;
 
 import java.io.File;
 import java.io.FileNotFoundException;
 import java.net.ConnectException;
+import java.net.MalformedURLException;
+import java.net.URLDecoder;
+import java.net.URLEncoder;
+import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.util.*;
@@ -47,10 +50,7 @@ import java.util.function.BiConsumer;
 import java.util.function.Consumer;
 import java.util.function.Function;
 
-import static org.hamcrest.CoreMatchers.instanceOf;
-import static org.hamcrest.CoreMatchers.not;
-import static org.hamcrest.CoreMatchers.equalTo;
-import static org.hamcrest.CoreMatchers.nullValue;
+import static org.hamcrest.CoreMatchers.*;
 
 /**
  * @author <a href="mailto:julien@julienviet.com">Julien Viet</a>
@@ -952,6 +952,8 @@ public class WebClientTest extends WebClientTestBase {
       public long getReadLength() { throw new UnsupportedOperationException(); }
       public AsyncFile setWritePos(long l) { throw new UnsupportedOperationException(); }
       public AsyncFile setReadBufferSize(int i) { throw new UnsupportedOperationException(); }
+      public long sizeBlocking() { return 0; }
+      public Future<Long> size() { return Future.succeededFuture(0L); }
       public AsyncFile exceptionHandler(Handler<Throwable> handler) {
         return this;
       }
@@ -1129,6 +1131,26 @@ public class WebClientTest extends WebClientTestBase {
   }
 
   @Test
+  public void testFormUrlEncodedWithCharset() throws Exception {
+    String str = "ø";
+    String expected = URLDecoder.decode(URLEncoder.encode(str, StandardCharsets.ISO_8859_1.name()), StandardCharsets.UTF_8.name());
+    server.requestHandler(req -> {
+      req.setExpectMultipart(true);
+      req.endHandler(v -> {
+        String val = req.getFormAttribute("param1");
+        assertEquals(expected, val);
+        req.response().end();
+      });
+    });
+    startServer();
+    MultiMap form = MultiMap.caseInsensitiveMultiMap();
+    form.add("param1", str);
+    HttpRequest<Buffer> builder = webClient.post("/somepath");
+    builder.sendForm(form, StandardCharsets.ISO_8859_1.name(), onSuccess(resp -> complete()));
+    await();
+  }
+
+  @Test
   public void testFormUrlEncodedUnescaped() throws Exception {
     server.requestHandler(req -> {
       req.setExpectMultipart(true);
@@ -1162,6 +1184,24 @@ public class WebClientTest extends WebClientTestBase {
     HttpRequest<Buffer> builder = webClient.post("/somepath");
     builder.putHeader("content-type", "multipart/form-data");
     builder.sendForm(form, onSuccess(resp -> complete()));
+    await();
+  }
+
+  @Test
+  public void testFormMultipartWithCharset() throws Exception {
+    server.requestHandler(req -> {
+      req.body().onComplete(onSuccess(body -> {
+        System.out.println("body = " + body);
+        assertTrue(body.toString().contains("content-type: text/plain; charset=ISO-8859-1"));
+        req.response().end();
+      }));
+    });
+    startServer();
+    MultiMap form = MultiMap.caseInsensitiveMultiMap();
+    form.add("param1", "param1_value");
+    HttpRequest<Buffer> builder = webClient.post("/somepath");
+    builder.putHeader("content-type", "multipart/form-data");
+    builder.sendForm(form, "ISO-8859-1", onSuccess(resp -> complete()));
     await();
   }
 
@@ -1218,10 +1258,24 @@ public class WebClientTest extends WebClientTestBase {
       assertEquals(2, uploads.size());
       assertEquals("test1", uploads.get(0).name);
       assertEquals("test1.txt", uploads.get(0).filename);
+      assertEquals("UTF-8", uploads.get(0).charset);
       assertEquals(content1, uploads.get(0).data);
       assertEquals("test2", uploads.get(1).name);
       assertEquals("test2.txt", uploads.get(1).filename);
+      assertEquals("UTF-8", uploads.get(1).charset);
       assertEquals(content2, uploads.get(1).data);
+    });
+  }
+
+  @Test
+  public void testFileUploadsFormMultipartWithCharset() throws Exception {
+    Buffer content = Buffer.buffer(TestUtils.randomAlphaString(16));
+    List<Upload> toUpload = Collections.singletonList(Upload.fileUpload("test1", "test1.txt", content));
+    testFileUploadFormMultipart(MultipartForm.create().setCharset(StandardCharsets.ISO_8859_1), toUpload, true, (req, uploads) -> {
+      assertEquals(1, uploads.size());
+      assertEquals("test1", uploads.get(0).name);
+      assertEquals("test1.txt", uploads.get(0).filename);
+      assertEquals("ISO-8859-1", uploads.get(0).charset);
     });
   }
 
@@ -1290,7 +1344,7 @@ public class WebClientTest extends WebClientTestBase {
         assertEquals("text/plain", upload.contentType());
         upload.handler(fileBuffer::appendBuffer);
         upload.endHandler(v -> {
-          uploads.add(Upload.fileUpload(upload.name(), upload.filename(), fileBuffer));
+          uploads.add(new Upload(upload.name(), upload.filename(), true, upload.charset(), fileBuffer));
         });
       });
       req.endHandler(v -> {
@@ -1309,19 +1363,21 @@ public class WebClientTest extends WebClientTestBase {
   static class Upload {
     final String name;
     final String filename;
+    final String charset;
     final Buffer data;
     final boolean file;
-    private Upload(String name, String filename, boolean file, Buffer data) {
+    private Upload(String name, String filename, boolean file, String charset, Buffer data) {
       this.name = name;
       this.filename = filename;
+      this.charset = charset;
       this.data = data;
       this.file = file;
     }
     static Upload fileUpload(String name, String filename, Buffer data) {
-      return new Upload(name, filename, true, data);
+      return new Upload(name, filename, true, null, data);
     }
     static Upload memoryUpload(String name, String filename, Buffer data) {
-      return new Upload(name, filename, true, data);
+      return new Upload(name, filename, true, null, data);
     }
   }
 
@@ -1378,6 +1434,7 @@ public class WebClientTest extends WebClientTestBase {
         fail("Missing expected header");
         return;
       }
+      assertEquals(Collections.singletonList("bar"), req.headers().getAll("foo"));
       if (req.path().equals("/redirect")) {
         req.response().setStatusCode(301).putHeader("Location", location).end();
         if (!expect) {
@@ -1988,5 +2045,38 @@ public class WebClientTest extends WebClientTestBase {
       drainHandler = handler;
       return this;
     }
+  }
+
+  @Test
+  public void testMalformedURLExceptionNotSwallowed() {
+    try {
+      webClient.requestAbs(HttpMethod.POST, "blah://foo@bar");
+    } catch (VertxException e) {
+      assertThat(e.getCause(), instanceOf(MalformedURLException.class));
+    }
+  }
+
+  @Test
+  public void testQueryParamSpecialChars() throws Exception {
+    server.requestHandler(req -> {
+      assertEquals("c%3Ad=e", req.query());
+      req.response().end();
+    });
+    startServer();
+    HttpRequest<Buffer> req = webClient.get("/test").addQueryParam("c:d", "e");
+    req.send(onSuccess(resp -> testComplete()));
+    await();
+  }
+
+  @Test
+  public void testQueryParamSpecialCharsDirect() throws Exception {
+    server.requestHandler(req -> {
+      assertEquals("c:d=e", req.query());
+      req.response().end();
+    });
+    startServer();
+    HttpRequest<Buffer> req = webClient.get("/test/?c:d=e");
+    req.send(onSuccess(resp -> testComplete()));
+    await();
   }
 }

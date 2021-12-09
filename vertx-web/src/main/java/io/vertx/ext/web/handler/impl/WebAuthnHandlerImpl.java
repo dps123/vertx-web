@@ -15,20 +15,26 @@
  */
 package io.vertx.ext.web.handler.impl;
 
+import io.vertx.core.AsyncResult;
+import io.vertx.core.Future;
+import io.vertx.core.Handler;
 import io.vertx.core.http.HttpMethod;
 import io.vertx.core.json.JsonObject;
 import io.vertx.ext.auth.User;
 import io.vertx.ext.auth.webauthn.WebAuthn;
 import io.vertx.ext.auth.webauthn.WebAuthnCredentials;
+import io.vertx.ext.auth.webauthn.impl.attestation.AttestationException;
 import io.vertx.ext.web.Route;
 import io.vertx.ext.web.RoutingContext;
 import io.vertx.ext.web.Session;
+import io.vertx.ext.web.handler.HttpException;
 import io.vertx.ext.web.handler.WebAuthnHandler;
 import io.vertx.ext.web.impl.Origin;
 
-public class WebAuthnHandlerImpl implements WebAuthnHandler {
+public class WebAuthnHandlerImpl extends AuthenticationHandlerImpl<WebAuthn> implements WebAuthnHandler {
 
-  private final WebAuthn webAuthn;
+  private static final boolean CONFORMANCE = Boolean.getBoolean("io.vertx.ext.web.fido2.conformance.tests");
+
   // the extra routes
   private Route register = null;
   private Route login = null;
@@ -38,7 +44,7 @@ public class WebAuthnHandlerImpl implements WebAuthnHandler {
   private String domain;
 
   public WebAuthnHandlerImpl(WebAuthn webAuthN) {
-    this.webAuthn = webAuthN;
+    super(webAuthN);
   }
 
   private static boolean containsRequiredString(JsonObject json, String key) {
@@ -94,32 +100,31 @@ public class WebAuthnHandlerImpl implements WebAuthnHandler {
   }
 
   @Override
-  public void handle(RoutingContext ctx) {
-
+  public void authenticate(RoutingContext ctx, Handler<AsyncResult<User>> handler) {
     if (response == null) {
-      ctx.fail(500, new IllegalStateException("No callback mounted!"));
+      handler.handle(Future.failedFuture(new HttpException(500, new IllegalStateException("No callback mounted!"))));
       return;
     }
 
     if (matchesRoute(ctx, response)) {
-      ctx.fail(500, new IllegalStateException("The callback route is shaded by the WebAuthNAuthHandler, ensure the callback route is added BEFORE the WebAuthNAuthHandler route!"));
+      handler.handle(Future.failedFuture(new HttpException(500, new IllegalStateException("The callback route is shaded by the WebAuthNAuthHandler, ensure the callback route is added BEFORE the WebAuthNAuthHandler route!"))));
       return;
     }
 
     if (matchesRoute(ctx, register)) {
-      ctx.fail(500, new IllegalStateException("The register callback route is shaded by the WebAuthNAuthHandler, ensure the callback route is added BEFORE the WebAuthNAuthHandler route!"));
+      handler.handle(Future.failedFuture(new HttpException(500, new IllegalStateException("The register callback route is shaded by the WebAuthNAuthHandler, ensure the callback route is added BEFORE the WebAuthNAuthHandler route!"))));
       return;
     }
 
     if (matchesRoute(ctx, login)) {
-      ctx.fail(500, new IllegalStateException("The login callback route is shaded by the WebAuthNAuthHandler, ensure the callback route is added BEFORE the WebAuthNAuthHandler route!"));
+      handler.handle(Future.failedFuture(new HttpException(500, new IllegalStateException("The login callback route is shaded by the WebAuthNAuthHandler, ensure the callback route is added BEFORE the WebAuthNAuthHandler route!"))));
       return;
     }
 
     if (ctx.user() == null) {
-      ctx.fail(401);
+      handler.handle(Future.failedFuture(new HttpException(401)));
     } else {
-      ctx.next();
+      handler.handle(Future.succeededFuture(ctx.user()));
     }
   }
 
@@ -138,7 +143,7 @@ public class WebAuthnHandlerImpl implements WebAuthnHandler {
           // the register object should match a Webauthn user.
           // A user has only a required field: name
           // And optional fields: displayName and icon
-          if (!containsRequiredString(webauthnRegister, "name")) {
+          if (webauthnRegister == null || !containsRequiredString(webauthnRegister, "name")) {
             ctx.fail(400, new IllegalArgumentException("missing 'name' field from request json"));
           } else {
             // input basic validation is OK
@@ -148,7 +153,7 @@ public class WebAuthnHandlerImpl implements WebAuthnHandler {
               return;
             }
 
-            webAuthn.createCredentialsOptions(webauthnRegister, createCredentialsOptions -> {
+            authProvider.createCredentialsOptions(webauthnRegister, createCredentialsOptions -> {
               if (createCredentialsOptions.failed()) {
                 ctx.fail(createCredentialsOptions.cause());
                 return;
@@ -157,12 +162,11 @@ public class WebAuthnHandlerImpl implements WebAuthnHandler {
               final JsonObject credentialsOptions = createCredentialsOptions.result();
 
               // save challenge to the session
-              ctx.session()
+              session
                 .put("challenge", credentialsOptions.getString("challenge"))
                 .put("username", webauthnRegister.getString("name"));
 
-//              ctx.json(credentialsOptions.put("status", "ok").put("errorMessage", ""));
-              ctx.json(credentialsOptions);
+              ok(ctx, credentialsOptions);
             });
           }
         } catch (IllegalArgumentException e) {
@@ -185,7 +189,7 @@ public class WebAuthnHandlerImpl implements WebAuthnHandler {
           final JsonObject webauthnLogin = ctx.getBodyAsJson();
           final Session session = ctx.session();
 
-          if (!containsRequiredString(webauthnLogin, "name")) {
+          if (webauthnLogin == null || !containsRequiredString(webauthnLogin, "name")) {
             ctx.fail(400, new IllegalArgumentException("Request missing 'name' field"));
             return;
           }
@@ -200,7 +204,7 @@ public class WebAuthnHandlerImpl implements WebAuthnHandler {
           final String username = webauthnLogin.getString("name");
 
           // STEP 18 Generate assertion
-          webAuthn.getCredentialsOptions(username, generateServerGetAssertion -> {
+          authProvider.getCredentialsOptions(username, generateServerGetAssertion -> {
             if (generateServerGetAssertion.failed()) {
               ctx.fail(generateServerGetAssertion.cause());
               return;
@@ -212,8 +216,7 @@ public class WebAuthnHandlerImpl implements WebAuthnHandler {
               .put("challenge", getAssertion.getString("challenge"))
               .put("username", username);
 
-//            ctx.json(getAssertion.put("status", "ok").put("errorMessage", ""));
-            ctx.json(getAssertion);
+            ok(ctx, getAssertion);
           });
         } catch (IllegalArgumentException e) {
           ctx.fail(400, e);
@@ -235,7 +238,8 @@ public class WebAuthnHandlerImpl implements WebAuthnHandler {
           final JsonObject webauthnResp = ctx.getBodyAsJson();
           // input validation
           if (
-            !containsRequiredString(webauthnResp, "id") ||
+            webauthnResp == null ||
+              !containsRequiredString(webauthnResp, "id") ||
               !containsRequiredString(webauthnResp, "rawId") ||
               !containsRequiredObject(webauthnResp, "response") ||
               !containsOptionalString(webauthnResp.getJsonObject("response"), "userHandle") ||
@@ -250,12 +254,12 @@ public class WebAuthnHandlerImpl implements WebAuthnHandler {
 
           final Session session = ctx.session();
 
-          if (ctx.session() == null) {
+          if (session == null) {
             ctx.fail(500, new IllegalStateException("No session or session handler is missing."));
             return;
           }
 
-          webAuthn.authenticate(
+          authProvider.authenticate(
             // authInfo
             new WebAuthnCredentials()
               .setOrigin(origin)
@@ -274,10 +278,14 @@ public class WebAuthnHandlerImpl implements WebAuthnHandler {
                 // the user has upgraded from unauthenticated to authenticated
                 // session should be upgraded as recommended by owasp
                 session.regenerateId();
-//                ctx.json(new JsonObject().put("status", "ok").put("errorMessage", ""));
-                ctx.response().end();
+                ok(ctx);
               } else {
-                ctx.fail(authenticate.cause());
+                Throwable cause = authenticate.cause();
+                if (cause instanceof AttestationException) {
+                  ctx.fail(400, cause);
+                } else {
+                  ctx.fail(cause);
+                }
               }
             });
         } catch (IllegalArgumentException e) {
@@ -301,5 +309,23 @@ public class WebAuthnHandlerImpl implements WebAuthnHandler {
       domain = null;
     }
     return this;
+  }
+
+  private static void ok(RoutingContext ctx) {
+    if (CONFORMANCE) {
+      ctx.json(new JsonObject().put("status", "ok").put("errorMessage", ""));
+    } else {
+      ctx.response()
+        .setStatusCode(204)
+        .end();
+    }
+  }
+
+  private static void ok(RoutingContext ctx, JsonObject result) {
+    if (CONFORMANCE) {
+      ctx.json(result.put("status", "ok").put("errorMessage", ""));
+    } else {
+      ctx.json(result);
+    }
   }
 }

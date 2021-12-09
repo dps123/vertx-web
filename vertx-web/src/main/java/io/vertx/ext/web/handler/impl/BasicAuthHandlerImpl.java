@@ -19,13 +19,16 @@ package io.vertx.ext.web.handler.impl;
 import io.vertx.core.AsyncResult;
 import io.vertx.core.Future;
 import io.vertx.core.Handler;
+import io.vertx.ext.auth.User;
 import io.vertx.ext.auth.authentication.AuthenticationProvider;
-import io.vertx.ext.auth.authentication.Credentials;
 import io.vertx.ext.auth.authentication.UsernamePasswordCredentials;
 import io.vertx.ext.web.RoutingContext;
 import io.vertx.ext.web.handler.BasicAuthHandler;
+import io.vertx.ext.web.handler.HttpException;
 
-import java.util.Base64;
+import java.nio.charset.StandardCharsets;
+
+import static io.vertx.ext.auth.impl.Codec.base64Decode;
 
 /**
  * @author <a href="http://pmlopes@gmail.com">Paulo Lopes</a>
@@ -34,13 +37,13 @@ import java.util.Base64;
 public class BasicAuthHandlerImpl extends HTTPAuthorizationHandler<AuthenticationProvider> implements BasicAuthHandler {
 
   public BasicAuthHandlerImpl(AuthenticationProvider authProvider, String realm) {
-    super(authProvider, realm, Type.BASIC);
+    super(authProvider, Type.BASIC, realm);
   }
 
   @Override
-  public void parseCredentials(RoutingContext context, Handler<AsyncResult<Credentials>> handler) {
+  public void authenticate(RoutingContext context, Handler<AsyncResult<User>> handler) {
 
-    parseAuthorization(context, false, parseAuthorization -> {
+    parseAuthorization(context, parseAuthorization -> {
       if (parseAuthorization.failed()) {
         handler.handle(Future.failedFuture(parseAuthorization.cause()));
         return;
@@ -51,7 +54,7 @@ public class BasicAuthHandlerImpl extends HTTPAuthorizationHandler<Authenticatio
 
       try {
         // decode the payload
-        String decoded = new String(Base64.getDecoder().decode(parseAuthorization.result()));
+        String decoded = new String(base64Decode(parseAuthorization.result()), StandardCharsets.UTF_8);
 
         int colonIdx = decoded.indexOf(":");
         if (colonIdx != -1) {
@@ -62,11 +65,17 @@ public class BasicAuthHandlerImpl extends HTTPAuthorizationHandler<Authenticatio
           spass = null;
         }
       } catch (RuntimeException e) {
-        context.fail(400,e);
+        handler.handle(Future.failedFuture(new HttpException(400, e)));
         return;
       }
 
-      handler.handle(Future.succeededFuture(new UsernamePasswordCredentials(suser, spass)));
+      authProvider.authenticate(new UsernamePasswordCredentials(suser, spass), authn -> {
+        if (authn.failed()) {
+          handler.handle(Future.failedFuture(new HttpException(401, authn.cause())));
+        } else {
+          handler.handle(authn);
+        }
+      });
     });
   }
 }

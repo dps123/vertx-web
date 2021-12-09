@@ -1,5 +1,6 @@
 package io.vertx.ext.web.impl;
 
+import io.netty.handler.codec.DecoderResult;
 import io.netty.handler.codec.http.QueryStringDecoder;
 import io.vertx.codegen.annotations.Nullable;
 import io.vertx.core.*;
@@ -17,6 +18,7 @@ import javax.net.ssl.SSLSession;
 import javax.security.cert.X509Certificate;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 class HttpServerRequestWrapper implements HttpServerRequestInternal {
 
@@ -74,6 +76,11 @@ class HttpServerRequestWrapper implements HttpServerRequestInternal {
   public HttpServerRequest body(Handler<AsyncResult<Buffer>> handler) {
     delegate.body(handler);
     return this;
+  }
+
+  @Override
+  public DecoderResult decoderResult() {
+    return delegate.decoderResult();
   }
 
   @Override
@@ -221,6 +228,7 @@ class HttpServerRequestWrapper implements HttpServerRequestInternal {
   }
 
   @Override
+  @Deprecated
   public X509Certificate[] peerCertificateChain() throws SSLPeerUnverifiedException {
     return delegate.peerCertificateChain();
   }
@@ -365,13 +373,23 @@ class HttpServerRequestWrapper implements HttpServerRequestInternal {
   }
 
   @Override
-  public int cookieCount() {
-    return delegate.cookieCount();
+  public @Nullable Cookie getCookie(String name, String domain, String path) {
+    return delegate.getCookie(name, domain, path);
   }
 
   @Override
-  public Map<String, Cookie> cookieMap() {
-    return delegate.cookieMap();
+  public String getParam(String paramName, String defaultValue) {
+    return delegate.getParam(paramName, defaultValue);
+  }
+
+  @Override
+  public Set<Cookie> cookies(String name) {
+    return delegate.cookies(name);
+  }
+
+  @Override
+  public Set<Cookie> cookies() {
+    return delegate.cookies();
   }
 
   @Override

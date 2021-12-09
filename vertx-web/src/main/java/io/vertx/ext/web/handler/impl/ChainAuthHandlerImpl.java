@@ -3,23 +3,20 @@ package io.vertx.ext.web.handler.impl;
 import io.vertx.core.AsyncResult;
 import io.vertx.core.Future;
 import io.vertx.core.Handler;
+import io.vertx.ext.auth.User;
 import io.vertx.ext.auth.authentication.AuthenticationProvider;
-import io.vertx.ext.auth.authentication.Credentials;
 import io.vertx.ext.web.RoutingContext;
-import io.vertx.ext.web.handler.AuthenticationHandler;
-import io.vertx.ext.web.handler.ChainAuthHandler;
-import io.vertx.ext.web.handler.OAuth2AuthHandler;
-import io.vertx.ext.web.handler.RedirectAuthHandler;
+import io.vertx.ext.web.handler.*;
 
 import java.util.ArrayList;
 import java.util.List;
 
 public class ChainAuthHandlerImpl extends AuthenticationHandlerImpl<AuthenticationProvider> implements ChainAuthHandler {
 
-  private final List<AuthenticationHandler> handlers = new ArrayList<>();
+  private final List<AuthenticationHandlerInternal> handlers = new ArrayList<>();
   private final boolean all;
 
-  private boolean willRedirect = false;
+  private int willRedirect = -1;
 
   public ChainAuthHandlerImpl(boolean all) {
     super(null);
@@ -27,24 +24,26 @@ public class ChainAuthHandlerImpl extends AuthenticationHandlerImpl<Authenticati
   }
 
   @Override
+  public boolean performsRedirect() {
+    return willRedirect != -1;
+  }
+
+  @Override
   public synchronized ChainAuthHandler add(AuthenticationHandler other) {
-    if (willRedirect) {
-      throw new IllegalStateException("Cannot add a handler after a handler known to perform a HTTP redirect [RedirectAuthHandler/Oauth2Handler]");
+    if (performsRedirect()) {
+      throw new IllegalStateException("Cannot add a handler after a handler known to perform a HTTP redirect: " + handlers.get(willRedirect));
     }
-    handlers.add(other);
-    // validation for well known redirect handlers
-    if (other instanceof RedirectAuthHandler || other instanceof OAuth2AuthHandler) {
-      willRedirect = true;
+    final AuthenticationHandlerInternal otherInternal = (AuthenticationHandlerInternal) other;
+    // control if we should not allow more handlers due to the possibility of a redirect to happen
+    if (otherInternal.performsRedirect()) {
+      willRedirect = handlers.size();
     }
-    // special case, when chaining a chain, we must take the redirect in consideration too
-    if (other instanceof ChainAuthHandler) {
-      willRedirect &= ((ChainAuthHandlerImpl) other).willRedirect;
-    }
+    handlers.add(otherInternal);
     return this;
   }
 
   @Override
-  public void parseCredentials(RoutingContext context, Handler<AsyncResult<Credentials>> handler) {
+  public void authenticate(RoutingContext context, Handler<AsyncResult<User>> handler) {
     if (handlers.size() == 0) {
       handler.handle(Future.failedFuture("No providers in the auth chain."));
     } else {
@@ -53,7 +52,7 @@ public class ChainAuthHandlerImpl extends AuthenticationHandlerImpl<Authenticati
     }
   }
 
-  private void iterate(final int idx, final RoutingContext ctx, Credentials result, HttpStatusException exception, Handler<AsyncResult<Credentials>> handler) {
+  private void iterate(final int idx, final RoutingContext ctx, User result, Throwable exception, Handler<AsyncResult<User>> handler) {
     // stop condition
     if (idx >= handlers.size()) {
       if (all) {
@@ -71,9 +70,9 @@ public class ChainAuthHandlerImpl extends AuthenticationHandlerImpl<Authenticati
     }
 
     // parse the request in order to extract the credentials object
-    final AuthenticationHandler authHandler = handlers.get(idx);
+    final AuthenticationHandlerInternal authHandler = handlers.get(idx);
 
-    authHandler.parseCredentials(ctx, res -> {
+    authHandler.authenticate(ctx, res -> {
       if (res.failed()) {
         if (all) {
           // all handlers need to be valid, a single failure is enough to
@@ -81,8 +80,8 @@ public class ChainAuthHandlerImpl extends AuthenticationHandlerImpl<Authenticati
         } else {
           // any handler can be valid, if the response is within a validation error
           // the chain is allowed to proceed, otherwise we must abort.
-          if (res.cause() instanceof HttpStatusException) {
-            final HttpStatusException ex = (HttpStatusException) res.cause();
+          if (res.cause() instanceof HttpException) {
+            final HttpException ex = (HttpException) res.cause();
             switch (ex.getStatusCode()) {
               case 302:
               case 400:
@@ -95,13 +94,8 @@ public class ChainAuthHandlerImpl extends AuthenticationHandlerImpl<Authenticati
           }
           // the error is not a validation exception, so we abort regardless
         }
-          handler.handle(Future.failedFuture(res.cause()));
-          return;
-      }
-
-      // setup the desired auth provider if we can
-      if (authHandler instanceof AuthenticationHandlerImpl) {
-        ctx.put(AuthenticationHandlerImpl.AUTH_PROVIDER_CONTEXT_KEY, ((AuthenticationHandlerImpl<?>) authHandler).getAuthProvider(ctx));
+        handler.handle(Future.failedFuture(res.cause()));
+        return;
       }
 
       if (all) {
@@ -117,7 +111,7 @@ public class ChainAuthHandlerImpl extends AuthenticationHandlerImpl<Authenticati
 
   @Override
   public String authenticateHeader(RoutingContext ctx) {
-    for (AuthenticationHandler authHandler : handlers) {
+    for (AuthenticationHandlerInternal authHandler : handlers) {
       String header = authHandler.authenticateHeader(ctx);
       if (header != null) {
         return header;
@@ -126,5 +120,3 @@ public class ChainAuthHandlerImpl extends AuthenticationHandlerImpl<Authenticati
     return null;
   }
 }
-
-

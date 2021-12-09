@@ -16,6 +16,7 @@
 
 package io.vertx.ext.web.sstore;
 
+import io.vertx.codegen.annotations.Nullable;
 import io.vertx.core.json.JsonObject;
 import io.vertx.ext.auth.VertxContextPRNG;
 import io.vertx.ext.web.Session;
@@ -143,7 +144,7 @@ public abstract class AbstractSession implements Session, SessionInternal {
 
   @Override
   @SuppressWarnings("unchecked")
-  public <T> T get(String key) {
+  public <T> @Nullable T get(String key) {
     if (isEmpty()) {
       return null;
     }
@@ -179,7 +180,7 @@ public abstract class AbstractSession implements Session, SessionInternal {
 
   @Override
   @SuppressWarnings("unchecked")
-  public <T> T remove(String key) {
+  public <T> @Nullable T remove(String key) {
     if (isEmpty()) {
       return null;
     }
@@ -193,12 +194,13 @@ public abstract class AbstractSession implements Session, SessionInternal {
       synchronized (this) {
         // double check since there could already been someone in the lock
         if (data == null) {
-          data = new ConcurrentHashMap<>();
           if (destroyed) {
             // pretty much should behave as a regeneration
             regenerateId();
             destroyed = false;
           }
+          // delay the assignment to avoid potential races
+          data = new ConcurrentHashMap<>();
         }
       }
     }

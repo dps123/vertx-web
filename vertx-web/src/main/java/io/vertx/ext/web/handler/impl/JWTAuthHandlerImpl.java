@@ -19,31 +19,137 @@ package io.vertx.ext.web.handler.impl;
 import io.vertx.core.AsyncResult;
 import io.vertx.core.Future;
 import io.vertx.core.Handler;
-import io.vertx.ext.auth.authentication.Credentials;
+import io.vertx.core.json.JsonObject;
+import io.vertx.ext.auth.User;
 import io.vertx.ext.auth.authentication.TokenCredentials;
 import io.vertx.ext.auth.jwt.JWTAuth;
 import io.vertx.ext.web.RoutingContext;
+import io.vertx.ext.web.handler.HttpException;
 import io.vertx.ext.web.handler.JWTAuthHandler;
 
-/**
- * @author <a href="http://pmlopes@gmail.com">Paulo Lopes</a>
- */
-public class JWTAuthHandlerImpl extends HTTPAuthorizationHandler<JWTAuth> implements JWTAuthHandler {
+import java.util.ArrayList;
+import java.util.List;
+import java.util.stream.Collectors;
+import java.util.stream.Stream;
 
-  public JWTAuthHandlerImpl(JWTAuth authProvider) {
-    super(authProvider, Type.BEARER);
+/**
+ * @author <a href="mailto:pmlopes@gmail.com">Paulo Lopes</a>
+ */
+public class JWTAuthHandlerImpl extends HTTPAuthorizationHandler<JWTAuth> implements JWTAuthHandler, ScopedAuthentication<JWTAuthHandler> {
+
+  private final List<String> scopes;
+  private final String delimiter;
+
+  public JWTAuthHandlerImpl(JWTAuth authProvider, String realm) {
+    super(authProvider, Type.BEARER, realm);
+    scopes = new ArrayList<>();
+    this.delimiter  = " ";
+  }
+
+  private JWTAuthHandlerImpl(JWTAuthHandlerImpl base, List<String> scopes, String delimiter) {
+    super(base.authProvider, Type.BEARER, base.realm);
+    this.scopes = scopes;
+    this.delimiter = delimiter;
   }
 
   @Override
-  public void parseCredentials(RoutingContext context, Handler<AsyncResult<Credentials>> handler) {
+  public void authenticate(RoutingContext context, Handler<AsyncResult<User>> handler) {
 
-    parseAuthorization(context, false, parseAuthorization -> {
+    parseAuthorization(context, parseAuthorization -> {
       if (parseAuthorization.failed()) {
         handler.handle(Future.failedFuture(parseAuthorization.cause()));
         return;
       }
 
-      handler.handle(Future.succeededFuture(new TokenCredentials(parseAuthorization.result())));
+      String token = parseAuthorization.result();
+      int segments = 0;
+      for (int i = 0; i < token.length(); i++) {
+        char c = token.charAt(i);
+        if (c == '.') {
+          if (++segments == 3) {
+            handler.handle(Future.failedFuture(new HttpException(400, "Too many segments in token")));
+            return;
+          }
+          continue;
+        }
+        if (Character.isLetterOrDigit(c) || c == '-' || c == '_') {
+          continue;
+        }
+        // invalid character
+        handler.handle(Future.failedFuture(new HttpException(400, "Invalid character in token: " + (int) c)));
+        return;
+      }
+
+      authProvider.authenticate(new TokenCredentials(token), authn -> {
+        if (authn.failed()) {
+          handler.handle(Future.failedFuture(new HttpException(401, authn.cause())));
+        } else {
+          handler.handle(authn);
+        }
+      });
     });
+  }
+
+  @Override
+  public JWTAuthHandler withScope(String scope) {
+    List<String> updatedScopes = new ArrayList<>(this.scopes);
+    updatedScopes.add(scope);
+    return new JWTAuthHandlerImpl(this, updatedScopes, delimiter);
+  }
+
+  @Override
+  public JWTAuthHandler withScopes(List<String> scopes) {
+    return new JWTAuthHandlerImpl(this, scopes, delimiter);
+  }
+
+  @Override
+  public JWTAuthHandler scopeDelimiter(String delimeter) {
+    return new JWTAuthHandlerImpl(this, scopes, delimeter);
+  }
+
+  /**
+   * The default behavior for post-authentication
+   */
+  @Override
+  public void postAuthentication(RoutingContext ctx) {
+    final User user = ctx.user();
+    if (user == null) {
+      // bad state
+      ctx.fail(403, new IllegalStateException("no user in the context"));
+      return;
+    }
+    // the user is authenticated, however the user may not have all the required scopes
+    if (scopes.size() > 0) {
+      final JsonObject jwt = user.get("accessToken");
+      if (jwt == null) {
+        ctx.fail(403, new IllegalStateException("Invalid JWT: null"));
+        return;
+      }
+
+      if(jwt.getValue("scope") == null) {
+        ctx.fail(403, new IllegalStateException("Invalid JWT: scope claim is required"));
+        return;
+      }
+
+      List<?> target;
+      if (jwt.getValue("scope") instanceof String) {
+        target =
+          Stream.of(jwt.getString("scope")
+            .split(delimiter))
+            .collect(Collectors.toList());
+      } else {
+        target = jwt.getJsonArray("scope").getList();
+      }
+
+      if (target != null) {
+        for (String scope : scopes) {
+          if (!target.contains(scope)) {
+            ctx.fail(403, new IllegalStateException("JWT scopes != handler scopes"));
+            return;
+          }
+        }
+      }
+    }
+    ctx.next();
   }
 }

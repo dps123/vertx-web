@@ -25,9 +25,9 @@ import java.util.Set;
  */
 public class WebApiProxyModel extends ProxyModel {
 
-  private static final String SIGNATURE_CONSTRAINT_ERROR = "Method must respect signature Future<io.vertx.ext.web.api.ServiceResponse> foo(extractedParams..., io.vertx.ext.web.api.ServiceRequest request) or foo(extractedParams..., io.vertx.ext.web.api.ServiceRequest request, Handler<AsyncResult<io.vertx.ext.web.api.ServiceResponse>> handler)";
+  private static final String SIGNATURE_CONSTRAINT_ERROR = "Method must respect signature Future<io.vertx.ext.web.api.service.ServiceResponse> foo(extractedParams..., io.vertx.ext.web.api.service.ServiceRequest request) or foo(extractedParams..., io.vertx.ext.web.api.service.ServiceRequest request, Handler<AsyncResult<io.vertx.ext.web.api.service.ServiceResponse>> handler)";
 
-  public WebApiProxyModel(ProcessingEnvironment env, TypeMirrorFactory typeFactory,TypeElement modelElt) {
+  public WebApiProxyModel(ProcessingEnvironment env, TypeMirrorFactory typeFactory, TypeElement modelElt) {
     super(env, typeFactory, modelElt);
   }
 
@@ -45,13 +45,15 @@ public class WebApiProxyModel extends ProxyModel {
   }
 
   @Override
-  protected MethodInfo createMethodInfo(Set<ClassTypeInfo> ownerTypes, String methodName, String comment, Doc doc, TypeInfo returnType, Text returnDescription, boolean isFluent, boolean isCacheReturn, List<ParamInfo> mParams, ExecutableElement methodElt, boolean isStatic, boolean isDefault, ArrayList<TypeParamInfo.Method> typeParams, TypeElement declaringElt, boolean methodDeprecated, Text deprecatedDesc) {
-    ProxyMethodInfo baseInfo = (ProxyMethodInfo) super.createMethodInfo(ownerTypes, methodName, comment, doc, returnType, returnDescription, isFluent, isCacheReturn, mParams, methodElt, isStatic, isDefault, typeParams, declaringElt, methodDeprecated, deprecatedDesc);
+  protected MethodInfo createMethodInfo(Set<ClassTypeInfo> ownerTypes, String methodName, String comment, Doc doc, TypeInfo returnType, Text returnDescription, boolean isFluent, boolean isCacheReturn, List<ParamInfo> mParams, ExecutableElement methodElt, boolean isStatic, boolean isDefault, ArrayList<TypeParamInfo.Method> typeParams, TypeElement declaringElt, boolean methodDeprecated, Text deprecatedDesc, boolean useFutures, boolean methodOverride) {
+    ProxyMethodInfo baseInfo = (ProxyMethodInfo) super.createMethodInfo(ownerTypes, methodName, comment, doc, returnType, returnDescription, isFluent, isCacheReturn, mParams, methodElt, isStatic, isDefault, typeParams, declaringElt, methodDeprecated, deprecatedDesc, useFutures, methodOverride);
     if (!isStatic && !baseInfo.isProxyClose()) {
       // Check signature constraints
 
       TypeInfo ret;
-      if (baseInfo.getKind() == MethodKind.FUTURE) {
+      if (baseInfo.getKind() == MethodKind.FUTURE && baseInfo.isUseFutures()) {
+        ret = ((ParameterizedTypeInfo)returnType).getArg(0);
+      } else if (baseInfo.getKind() == MethodKind.CALLBACK && !baseInfo.isUseFutures()) {
         ret = ((ParameterizedTypeInfo) ((ParameterizedTypeInfo) mParams.get(mParams.size() - 1).getType()).getArg(0)).getArg(0);
       } else {
         throw new GenException(methodElt, SIGNATURE_CONSTRAINT_ERROR);
@@ -61,7 +63,7 @@ public class WebApiProxyModel extends ProxyModel {
       }
 
       TypeInfo shouldBeServiceRequest;
-      if (baseInfo.getKind() == MethodKind.FUTURE) {
+      if (baseInfo.getKind() == MethodKind.CALLBACK) {
         if (mParams.size() <= 1) {
           throw new GenException(methodElt, SIGNATURE_CONSTRAINT_ERROR);
         }
