@@ -22,12 +22,12 @@
   <parent>
     <groupId>io.vertx</groupId>
     <artifactId>vertx-web-parent</artifactId>
-    <version>4.2.2</version>
+    <version>4.2.3</version>
   </parent>
 
   <artifactId>vertx-web-openapi</artifactId>
   <name>vertx-web-openapi Patched</name>
-  <version>4.2.2-patch</version>
+  <version>4.2.3-patch</version>
 
   <distributionManagement>
     <repository>
