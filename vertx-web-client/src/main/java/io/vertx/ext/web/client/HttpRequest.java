@@ -20,6 +20,7 @@ import io.vertx.core.*;
 import io.vertx.core.buffer.Buffer;
 import io.vertx.core.http.HttpMethod;
 import io.vertx.core.json.JsonObject;
+import io.vertx.core.net.ProxyOptions;
 import io.vertx.core.streams.ReadStream;
 import io.vertx.ext.auth.authentication.Credentials;
 import io.vertx.ext.auth.authentication.TokenCredentials;
@@ -28,7 +29,11 @@ import io.vertx.ext.web.client.predicate.ResponsePredicate;
 import io.vertx.ext.web.client.predicate.ResponsePredicateResult;
 import io.vertx.ext.web.codec.BodyCodec;
 import io.vertx.ext.web.multipart.MultipartForm;
+import io.vertx.uritemplate.Variables;
+import io.vertx.uritemplate.UriTemplate;
 
+import java.util.List;
+import java.util.Map;
 import java.util.function.Function;
 
 /**
@@ -263,6 +268,36 @@ public interface HttpRequest<T> {
   HttpRequest<T> setQueryParam(String paramName, String paramValue);
 
   /**
+   * Set a request URI template string parameter to the request, expanded when the request URI is a {@link UriTemplate}.
+   *
+   * @param paramName  the param name
+   * @param paramValue the param value
+   * @return a reference to this, so the API can be used fluently
+   */
+  @Fluent
+  HttpRequest<T> setTemplateParam(String paramName, String paramValue);
+
+  /**
+   * Set a request URI template list parameter to the request, expanded when the request URI is a {@link UriTemplate}.
+   *
+   * @param paramName  the param name
+   * @param paramValue the param value
+   * @return a reference to this, so the API can be used fluently
+   */
+  @Fluent
+  HttpRequest<T> setTemplateParam(String paramName, List<String> paramValue);
+
+  /**
+   * Set a request URI template map parameter to the request, expanded when the request URI is a {@link UriTemplate}.
+   *
+   * @param paramName  the param name
+   * @param paramValue the param value
+   * @return a reference to this, so the API can be used fluently
+   */
+  @Fluent
+  HttpRequest<T> setTemplateParam(String paramName, Map<String, String> paramValue);
+
+  /**
    * Set wether or not to follow the directs for the request.
    *
    * @param value true if redirections should be followed
@@ -270,6 +305,18 @@ public interface HttpRequest<T> {
    */
   @Fluent
   HttpRequest<T> followRedirects(boolean value);
+
+
+  /**
+   * Configure the request to set a proxy for this request.
+   *
+   * Setting proxy here supersedes the proxy set on the client itself
+   *
+   * @param proxyOptions The proxy options
+   * @return a reference to this, so the API can be used fluently
+   */
+  @Fluent
+  HttpRequest<T> proxy(ProxyOptions proxyOptions);
 
   /**
    * Add an expectation that the response is valid according to the provided {@code predicate}.
@@ -301,6 +348,13 @@ public interface HttpRequest<T> {
    * @return the current query parameters
    */
   MultiMap queryParams();
+
+  /**
+   * Return the current request URI template parameters.
+   *
+   * @return the current request URI template parameters
+   */
+  Variables templateParams();
 
   /**
    * Copy this request

@@ -1,10 +1,11 @@
 package io.vertx.ext.web.client;
 
 import io.netty.handler.codec.http.multipart.HttpPostRequestEncoder;
+import io.vertx.codegen.annotations.Nullable;
 import io.vertx.core.*;
 import io.vertx.core.buffer.Buffer;
 import io.vertx.core.file.AsyncFile;
-import io.vertx.core.file.OpenOptions;
+import io.vertx.core.file.AsyncFileLock;
 import io.vertx.core.http.*;
 import io.vertx.core.json.DecodeException;
 import io.vertx.core.json.JsonArray;
@@ -22,11 +23,13 @@ import io.vertx.ext.web.client.jackson.WineAndCheese;
 import io.vertx.ext.web.client.predicate.ErrorConverter;
 import io.vertx.ext.web.client.predicate.ResponsePredicate;
 import io.vertx.ext.web.client.predicate.ResponsePredicateResult;
+import io.vertx.uritemplate.UriTemplate;
 import io.vertx.ext.web.codec.BodyCodec;
 import io.vertx.ext.web.multipart.MultipartForm;
 import io.vertx.test.core.Repeat;
 import io.vertx.test.core.TestUtils;
 import io.vertx.test.tls.Cert;
+import org.junit.Ignore;
 import org.junit.Test;
 
 import java.io.File;
@@ -35,9 +38,7 @@ import java.net.ConnectException;
 import java.net.MalformedURLException;
 import java.net.URLDecoder;
 import java.net.URLEncoder;
-import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
 import java.util.*;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CountDownLatch;
@@ -86,6 +87,8 @@ public class WebClientTest extends WebClientTestBase {
       }
     );
   }
+
+
 
   @Test
   public void testBearerTokenAuthentication() throws Exception {
@@ -216,23 +219,6 @@ public class WebClientTest extends WebClientTestBase {
     }, req -> assertEquals(method, req.method()));
   }
 
-  private void testRequest(Function<WebClient, HttpRequest<Buffer>> reqFactory, Consumer<HttpServerRequest> reqChecker) throws Exception {
-    waitFor(4);
-    server.requestHandler(req -> {
-      try {
-        reqChecker.accept(req);
-        complete();
-      } finally {
-        req.response().end();
-      }
-    });
-    startServer();
-    HttpRequest<Buffer> builder = reqFactory.apply(webClient);
-    builder.send(onSuccess(resp -> complete()));
-    builder.send(onSuccess(resp -> complete()));
-    await();
-  }
-
   @Test
   public void testPost() throws Exception {
     testRequestWithBody(HttpMethod.POST, false);
@@ -258,46 +244,27 @@ public class WebClientTest extends WebClientTestBase {
     testRequestWithBody(HttpMethod.PATCH, false);
   }
 
-  private void testRequestWithBody(HttpMethod method, boolean chunked) throws Exception {
-    String expected = TestUtils.randomAlphaString(1024 * 1024);
-    File f = File.createTempFile("vertx", ".data");
-    f.deleteOnExit();
-    Files.write(f.toPath(), expected.getBytes(StandardCharsets.UTF_8));
-    waitFor(2);
-    server.requestHandler(req -> req.bodyHandler(buff -> {
-      assertEquals(method, req.method());
-      assertEquals(Buffer.buffer(expected), buff);
-      complete();
-      req.response().end();
-    }));
+  @Test
+  public void testProxyPerRequest() throws Exception {
+    startProxy(null, ProxyType.HTTP);
+    proxy.setForceUri("http://" + DEFAULT_HTTP_HOST + ":" + DEFAULT_HTTP_PORT);
+    server.requestHandler(req -> req.response().setStatusCode(200).end());
     startServer();
-    vertx.runOnContext(v -> {
-      AsyncFile asyncFile = vertx.fileSystem().openBlocking(f.getAbsolutePath(), new OpenOptions());
 
-      HttpRequest<Buffer> builder = null;
-
-      switch (method.name()) {
-        case "POST":
-          builder = webClient.post(DEFAULT_HTTP_PORT, DEFAULT_HTTP_HOST, "/somepath");
-          break;
-        case "PUT":
-          builder = webClient.put(DEFAULT_HTTP_PORT, DEFAULT_HTTP_HOST, "/somepath");
-          break;
-        case "PATCH":
-          builder = webClient.patch(DEFAULT_HTTP_PORT, DEFAULT_HTTP_HOST, "/somepath");
-          break;
-        default:
-          fail("Invalid HTTP method");
-      }
-
-      if (!chunked) {
-        builder = builder.putHeader("Content-Length", "" + expected.length());
-      }
-      builder.sendStream(asyncFile, onSuccess(resp -> {
-            assertEquals(200, resp.statusCode());
-            complete();
-          }));
-    });
+    webClient
+      .get("http://checkip.amazonaws.com/")
+      .proxy(new ProxyOptions().setPort(proxy.getPort()))
+      .send(ar -> {
+        if (ar.succeeded()) {
+          // Obtain response
+          HttpResponse<Buffer> response = ar.result();
+          assertEquals(200, response.statusCode());
+          assertEquals("http://checkip.amazonaws.com/", proxy.getLastUri());
+          testComplete();
+        } else {
+          fail(ar.cause());
+        }
+      });
     await();
   }
 
@@ -960,9 +927,14 @@ public class WebClientTest extends WebClientTestBase {
       public boolean writeQueueFull() {
         return false;
       }
-      public long getWritePos() {
-        throw new UnsupportedOperationException();
-      }
+      public long getWritePos() { throw new UnsupportedOperationException(); }
+      public AsyncFileLock tryLock() { throw new UnsupportedOperationException(); }
+      public AsyncFileLock tryLock(long l, long l1, boolean b) { throw new UnsupportedOperationException(); }
+      public Future<AsyncFileLock> lock() { throw new UnsupportedOperationException(); }
+      public void lock(Handler<AsyncResult<AsyncFileLock>> handler) { throw new UnsupportedOperationException(); }
+      public Future<AsyncFileLock> lock(long l, long l1, boolean b) { throw new UnsupportedOperationException(); }
+      public void lock(long l, long l1, boolean b, Handler<AsyncResult<AsyncFileLock>> handler) { throw new UnsupportedOperationException(); }
+
       public Future<Void> write(Buffer buffer) {
         Promise<Void> promise = Promise.promise();
         write(buffer, promise);

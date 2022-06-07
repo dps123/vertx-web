@@ -1,5 +1,5 @@
 /*
- * Copyright 2014 Red Hat, Inc.
+ * Copyright 2022 Red Hat, Inc.
  *
  *  All rights reserved. This program and the accompanying materials
  *  are made available under the terms of the Eclipse Public License v1.0
@@ -48,6 +48,7 @@ public class CorsHandlerImpl implements CorsHandler {
   private String exposedHeadersString;
   private boolean allowCredentials;
   private String maxAgeSeconds;
+  private boolean allowPrivateNetwork;
   private final Set<String> allowedMethods = new LinkedHashSet<>();
   private final Set<String> allowedHeaders = new LinkedHashSet<>();
   private final Set<String> exposedHeaders = new LinkedHashSet<>();
@@ -65,6 +66,14 @@ public class CorsHandlerImpl implements CorsHandler {
   public CorsHandlerImpl() {
     allowedOrigin = null;
     allowedOrigins = null;
+  }
+
+  private boolean starOrigin() {
+    return allowedOrigin == null && allowedOrigins == null;
+  }
+
+  private boolean staticOrigin() {
+    return allowedOrigin == null && allowedOrigins != null && allowedOrigins.size() == 1;
   }
 
   @Override
@@ -159,12 +168,23 @@ public class CorsHandlerImpl implements CorsHandler {
   }
 
   @Override
+  public CorsHandler allowPrivateNetwork(boolean allow) {
+    this.allowPrivateNetwork = allow;
+    return this;
+  }
+
+  @Override
   public void handle(RoutingContext context) {
     HttpServerRequest request = context.request();
     HttpServerResponse response = context.response();
     String origin = context.request().headers().get(ORIGIN);
     if (origin == null) {
-      Utils.appendToMapIfAbsent(response.headers(), VARY, ",", ORIGIN);
+      // https://fetch.spec.whatwg.org/#cors-protocol-and-http-caches
+      // If CORS protocol requirements are more complicated than setting `Access-Control-Allow-Origin` to *
+      // or a static origin, `Vary` is to be used.
+      if (!starOrigin() && !staticOrigin()) {
+        Utils.appendToMapIfAbsent(response.headers(), VARY, ",", ORIGIN);
+      }
       // Not a CORS request - we don't set any headers and just call the next handler
       context.next();
     } else if (isValidOrigin(origin)) {
@@ -188,7 +208,9 @@ public class CorsHandlerImpl implements CorsHandler {
         if (maxAgeSeconds != null) {
           response.putHeader(ACCESS_CONTROL_MAX_AGE, maxAgeSeconds);
         }
-
+        if (request.headers().contains(ACCESS_CONTROL_REQUEST_PRIVATE_NETWORK) && allowPrivateNetwork) {
+          response.putHeader(ACCESS_CONTROL_ALLOW_PRIVATE_NETWORK, "true");
+        }
         response
           // for old Safari
           .putHeader(CONTENT_LENGTH, "0")
@@ -226,8 +248,8 @@ public class CorsHandlerImpl implements CorsHandler {
 
   private boolean isValidOrigin(String origin) {
 
-    // Null means accept all origins
-    if (allowedOrigin == null && allowedOrigins == null) {
+    // * means accept all origins
+    if (starOrigin()) {
       return Origin.isValid(origin);
     }
 
@@ -247,10 +269,9 @@ public class CorsHandlerImpl implements CorsHandler {
   }
 
   private String getAllowedOrigin(String origin) {
-    if(allowedOrigin == null && allowedOrigins == null) {
+    if(starOrigin()) {
       return "*";
     }
-
     return origin;
   }
 }

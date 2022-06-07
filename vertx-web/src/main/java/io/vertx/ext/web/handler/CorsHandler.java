@@ -1,5 +1,5 @@
 /*
- * Copyright 2014 Red Hat, Inc.
+ * Copyright 2022 Red Hat, Inc.
  *
  *  All rights reserved. This program and the accompanying materials
  *  are made available under the terms of the Eclipse Public License v1.0
@@ -18,9 +18,7 @@ package io.vertx.ext.web.handler;
 
 import io.vertx.codegen.annotations.Fluent;
 import io.vertx.codegen.annotations.VertxGen;
-import io.vertx.core.Handler;
 import io.vertx.core.http.HttpMethod;
-import io.vertx.ext.web.RoutingContext;
 import io.vertx.ext.web.handler.impl.CorsHandlerImpl;
 
 import java.util.List;
@@ -30,9 +28,10 @@ import java.util.Set;
  * A handler which implements server side http://www.w3.org/TR/cors/[CORS] support for Vert.x-Web.
  *
  * @author <a href="http://tfox.org">Tim Fox</a>
+ * @author <a href="mailto:plopes@redhat.com">Paulo Lopes</a>
  */
 @VertxGen
-public interface CorsHandler extends Handler<RoutingContext> {
+public interface CorsHandler extends SecurityPolicyHandler {
 
   /**
    * Create a CORS handler using a regular expression to match origins. An origin follows rfc6454#section-7
@@ -150,5 +149,15 @@ public interface CorsHandler extends Handler<RoutingContext> {
    */
   @Fluent
   CorsHandler maxAgeSeconds(int maxAgeSeconds);
+
+  /**
+   * Set whether access from public to private networks are allowed.
+   * Defaults to false
+   *
+   * @param allow true if allowed
+   * @return a reference to this, so the API can be used fluently
+   */
+  @Fluent
+  CorsHandler allowPrivateNetwork(boolean allow);
 
 }

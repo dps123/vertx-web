@@ -54,7 +54,7 @@ public abstract class RoutingContextImplBase implements RoutingContextInternal {
   int matchFailure;
   // the current path matched string
   int matchRest = -1;
-  boolean matchNormalized;
+  boolean normalizedMatch;
   // internal runtime state
   private volatile long seen;
 
@@ -76,6 +76,16 @@ public abstract class RoutingContextImplBase implements RoutingContextInternal {
   @Override
   public boolean seenHandler(int id) {
     return (seen & id) != 0;
+  }
+
+  @Override
+  public int restIndex() {
+    return matchRest;
+  }
+
+  @Override
+  public boolean normalizedMatch() {
+    return normalizedMatch;
   }
 
   @Override
@@ -207,8 +217,6 @@ public abstract class RoutingContextImplBase implements RoutingContextInternal {
   }
 
   protected void unhandledFailure(int statusCode, Throwable failure, RouterImpl router) {
-    LOG.error("Unhandled exception in router", failure);
-
     int code = statusCode != -1 ?
       statusCode :
       (failure instanceof HttpException) ?
@@ -222,6 +230,9 @@ public abstract class RoutingContextImplBase implements RoutingContextInternal {
       } catch (Throwable t) {
         LOG.error("Error in error handler", t);
       }
+    } else {
+      // if there are no user defined handlers, we will log the exception
+      LOG.error("Unhandled exception in router", failure);
     }
 
     if (!response().ended() && !response().closed()) {
