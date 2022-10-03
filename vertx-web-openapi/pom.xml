@@ -27,7 +27,7 @@
 
   <artifactId>vertx-web-openapi</artifactId>
   <name>vertx-web-openapi Patched</name>
-  <version>4.3.1-patch</version>
+  <version>4.3.4-patch</version>
 
   <distributionManagement>
     <repository>
@@ -39,7 +39,7 @@
 
   <properties>
     <doc.skip>false</doc.skip>
-    <stack.version>4.3.1</stack.version>
+    <stack.version>4.3.4</stack.version>
     <junit5.version>5.7.0</junit5.version>
     <mockito.version>3.3.0</mockito.version>
     <assertj.version>3.15.0</assertj.version>
