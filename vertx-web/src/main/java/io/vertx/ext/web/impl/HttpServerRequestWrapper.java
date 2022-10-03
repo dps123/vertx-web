@@ -16,10 +16,15 @@ import io.vertx.ext.web.AllowForwardHeaders;
 import javax.net.ssl.SSLPeerUnverifiedException;
 import javax.net.ssl.SSLSession;
 import javax.security.cert.X509Certificate;
+import java.nio.charset.Charset;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
+/**
+ * Wraps the source {@link HttpServerRequestInternal}. It updates the method, path and query of the original request and
+ * resumes the request if a caller explicitly sets a handler to any callback that processes the request body.
+ */
 class HttpServerRequestWrapper implements HttpServerRequestInternal {
 
   private final HttpServerRequestInternal delegate;
@@ -44,7 +49,6 @@ class HttpServerRequestWrapper implements HttpServerRequestInternal {
     this.method = method;
     this.uri = uri;
     // lazy initialization
-    this.path = null;
     this.query = null;
     this.absoluteURI = null;
 
@@ -175,10 +179,10 @@ class HttpServerRequestWrapper implements HttpServerRequestInternal {
       params = MultiMap.caseInsensitiveMultiMap();
       // if there is no query it's not really needed to parse it
       if (query != null) {
-        QueryStringDecoder queryStringDecoder = new QueryStringDecoder(uri);
+        QueryStringDecoder queryStringDecoder = new QueryStringDecoder(uri, Charset.forName(delegate.getParamsCharset()));
         Map<String, List<String>> prms = queryStringDecoder.parameters();
         if (!prms.isEmpty()) {
-          for (Map.Entry<String, List<String>> entry: prms.entrySet()) {
+          for (Map.Entry<String, List<String>> entry : prms.entrySet()) {
             params.add(entry.getKey(), entry.getValue());
           }
         }
@@ -215,6 +219,21 @@ class HttpServerRequestWrapper implements HttpServerRequestInternal {
   @Override
   public String getHeader(CharSequence charSequence) {
     return delegate.getHeader(charSequence);
+  }
+
+  @Override
+  public HttpServerRequest setParamsCharset(String s) {
+    String old = delegate.getParamsCharset();
+    delegate.setParamsCharset(s);
+    if (!s.equals(old)) {
+      params = null;
+    }
+    return this;
+  }
+
+  @Override
+  public String getParamsCharset() {
+    return delegate.getParamsCharset();
   }
 
   @Override
@@ -330,19 +349,21 @@ class HttpServerRequestWrapper implements HttpServerRequestInternal {
 
   @Override
   public void toWebSocket(Handler<AsyncResult<ServerWebSocket>> handler) {
-    delegate.toWebSocket(toWebSocket -> {
-      if (toWebSocket.succeeded()) {
-        handler.handle(Future.succeededFuture(
-          new ServerWebSocketWrapper(toWebSocket.result(), host(), scheme(), isSSL(), remoteAddress())));
-      } else {
-        handler.handle(toWebSocket);
-      }
-    });
+    delegate
+      .toWebSocket(toWebSocket -> {
+        if (toWebSocket.succeeded()) {
+          handler.handle(Future.succeededFuture(
+            new ServerWebSocketWrapper(toWebSocket.result(), host(), scheme(), isSSL(), remoteAddress())));
+        } else {
+          handler.handle(toWebSocket);
+        }
+      });
   }
 
   @Override
   public Future<ServerWebSocket> toWebSocket() {
-    return delegate.toWebSocket()
+    return delegate
+      .toWebSocket()
       .map(ws -> new ServerWebSocketWrapper(ws, host(), scheme(), isSSL(), remoteAddress()));
   }
 

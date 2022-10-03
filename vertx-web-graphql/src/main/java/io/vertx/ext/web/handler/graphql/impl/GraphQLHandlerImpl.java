@@ -31,7 +31,6 @@ import io.vertx.ext.web.RoutingContext;
 import io.vertx.ext.web.handler.graphql.ExecutionInputBuilderWithContext;
 import io.vertx.ext.web.handler.graphql.GraphQLHandler;
 import io.vertx.ext.web.handler.graphql.GraphQLHandlerOptions;
-import io.vertx.ext.web.impl.RoutingContextInternal;
 import org.dataloader.DataLoaderRegistry;
 
 import java.util.*;
@@ -99,14 +98,14 @@ public class GraphQLHandlerImpl implements GraphQLHandler {
     if (method == GET) {
       handleGet(rc);
     } else if (method == POST) {
-      if (!((RoutingContextInternal) rc).seenHandler(RoutingContextInternal.BODY_HANDLER)) {
+      if (!rc.body().available()) {
         // the body handler was not set, so we cannot securely process POST bodies
         // we could just add an ad-hoc body handler but this can lead to DDoS attacks
         // and it doesn't really cover all the uploads, such as multipart, etc...
         // as well as resource cleanup
         rc.fail(500, new NoStackTraceThrowable("BodyHandler is required to process POST requests"));
       } else {
-        handlePost(rc, rc.getBody());
+        handlePost(rc, rc.body().buffer());
       }
     } else {
       rc.fail(405);
@@ -376,35 +375,32 @@ public class GraphQLHandlerImpl implements GraphQLHandler {
     }
 
     Function<RoutingContext, Object> qc;
+    Function<RoutingContext, DataLoaderRegistry> dlr;
+    Function<RoutingContext, Locale> l;
+    Handler<ExecutionInputBuilderWithContext<RoutingContext>> be;
     synchronized (this) {
       qc = queryContextFactory;
+      dlr = dataLoaderRegistryFactory;
+      l = localeFactory;
+      be = beforeExecute;
     }
+
     builder.context(qc.apply(rc));
 
-    Function<RoutingContext, DataLoaderRegistry> dlr;
-    synchronized (this) {
-      dlr = dataLoaderRegistryFactory;
-    }
     DataLoaderRegistry registry = dlr.apply(rc);
     if (registry != null) {
       builder.dataLoaderRegistry(registry);
     }
 
-    Function<RoutingContext, Locale> l;
-    synchronized (this) {
-      l = localeFactory;
-    }
     Locale locale = l.apply(rc);
     if (locale != null) {
       builder.locale(locale);
     }
 
-    Handler<ExecutionInputBuilderWithContext<RoutingContext>> beforeExecute;
-    synchronized (this) {
-      beforeExecute = this.beforeExecute;
-    }
-    if (beforeExecute != null) {
-      beforeExecute.handle(new ExecutionInputBuilderWithContext<RoutingContext>() {
+    builder.graphQLContext(Collections.singletonMap(RoutingContext.class, rc));
+
+    if (be != null) {
+      be.handle(new ExecutionInputBuilderWithContext<RoutingContext>() {
         @Override
         public RoutingContext context() {
           return rc;
@@ -416,8 +412,6 @@ public class GraphQLHandlerImpl implements GraphQLHandler {
         }
       });
     }
-
-    builder.graphQLContext(Collections.singletonMap(RoutingContext.class, rc));
 
     return Future.fromCompletionStage(graphQL.executeAsync(builder.build()), rc.vertx().getOrCreateContext())
       .map(executionResult -> new JsonObject(executionResult.toSpecification()));

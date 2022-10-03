@@ -17,6 +17,7 @@
 package io.vertx.ext.web.handler;
 
 import io.vertx.core.http.HttpClientResponse;
+import io.vertx.core.http.HttpHeaders;
 import io.vertx.core.http.HttpMethod;
 import io.vertx.ext.web.RoutingContext;
 import io.vertx.ext.web.WebTestBase;
@@ -252,12 +253,21 @@ public class CORSHandlerTest extends WebTestBase {
                             String accessControlAllowMethods, String accessControlAllowHeaders,
                             String accessControlExposeHeaders, String allowCredentials,
                             String maxAgeSeconds) {
+    checkHeaders(resp, accessControlAllowOrigin, accessControlAllowMethods, accessControlAllowHeaders,
+      accessControlExposeHeaders, allowCredentials, maxAgeSeconds, null);
+  }
+
+  private void checkHeaders(HttpClientResponse resp, String accessControlAllowOrigin,
+                            String accessControlAllowMethods, String accessControlAllowHeaders,
+                            String accessControlExposeHeaders, String allowCredentials,
+                            String maxAgeSeconds, String privateNetwork) {
     assertEquals(accessControlAllowOrigin, resp.headers().get("access-control-allow-origin"));
     assertEquals(accessControlAllowMethods, resp.headers().get("access-control-allow-methods"));
     assertEquals(accessControlAllowHeaders, resp.headers().get("access-control-allow-headers"));
     assertEquals(accessControlExposeHeaders, resp.headers().get("access-control-expose-headers"));
     assertEquals(allowCredentials, resp.headers().get("access-control-allow-credentials"));
     assertEquals(maxAgeSeconds, resp.headers().get("access-control-max-age"));
+    assertEquals(privateNetwork, resp.headers().get("access-control-allow-private-network"));
   }
 
   @Test
@@ -503,4 +513,59 @@ public class CORSHandlerTest extends WebTestBase {
     testRequest(HttpMethod.GET, "/", req -> req.headers().add("origin", "null"), resp -> checkHeaders(resp, "*", null, null, null), 200, "OK", null);
   }
 
+  @Test
+  public void testPreflightAllowPrivateNetwork() throws Exception {
+    router.route().handler(CorsHandler.create("http://vertx.*").allowedMethod(HttpMethod.GET).allowPrivateNetwork(true));
+    router.route().handler(context -> context.response().end());
+    testRequest(HttpMethod.OPTIONS, "/", req -> {
+      req.headers().add("origin", "http://vertx.io");
+      req.headers().add("access-control-request-method", "GET");
+      req.headers().add("access-control-request-private-network", "true");
+    }, resp -> checkHeaders(resp, "http://vertx.io", "GET", null, null, null, null, "true"), 204, "No Content", null);
+  }
+
+  @Test
+  public void testPreflightDenyPrivateNetwork() throws Exception {
+    router.route().handler(CorsHandler.create("http://vertx.*").allowedMethod(HttpMethod.GET).allowPrivateNetwork(false));
+    router.route().handler(context -> context.response().end());
+    testRequest(HttpMethod.OPTIONS, "/", req -> {
+      req.headers().add("origin", "http://vertx.io");
+      req.headers().add("access-control-request-method", "GET");
+      req.headers().add("access-control-request-private-network", "true");
+    }, resp -> checkHeaders(resp, "http://vertx.io", "GET", null, null, null, null, null), 204, "No Content", null);
+  }
+
+  @Test
+  public void testCORSSetup() throws Exception {
+
+    router
+      .route()
+      .handler(CorsHandler.create()
+        .addOrigin("https://mydomain.org:3000")
+        .addOrigin("https://mydomain.org:9443")
+        .allowCredentials(true)
+        .allowedHeader("Content-Type")
+        .allowedMethod(HttpMethod.GET)
+        .allowedMethod(HttpMethod.POST)
+        .allowedMethod(HttpMethod.OPTIONS)
+        .allowedHeader("Access-Control-Allow-Origin"))
+      .handler(BodyHandler.create().setBodyLimit(1))
+      .handler(context -> context.response().end());
+
+    testRequest(HttpMethod.POST, "/", req -> {
+      req.headers().add("origin", "https://mydomain.org:3000");
+    }, resp -> {
+      assertNotNull(resp.getHeader(HttpHeaders.ACCESS_CONTROL_ALLOW_CREDENTIALS));
+      assertNotNull(resp.getHeader(HttpHeaders.ACCESS_CONTROL_ALLOW_ORIGIN));
+    }, 200, "OK", null);
+
+    testRequest(HttpMethod.POST, "/", req -> {
+      req.headers().add("origin", "https://mydomain.org:3000");
+      req.send("abc");
+    }, resp -> {
+      assertNotNull(resp.getHeader(HttpHeaders.ACCESS_CONTROL_ALLOW_CREDENTIALS));
+      assertNotNull(resp.getHeader(HttpHeaders.ACCESS_CONTROL_ALLOW_ORIGIN));
+    }, 413, "Request Entity Too Large", null);
+
+  }
 }
