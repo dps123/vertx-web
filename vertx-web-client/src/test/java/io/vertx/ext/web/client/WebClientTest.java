@@ -88,7 +88,40 @@ public class WebClientTest extends WebClientTestBase {
     );
   }
 
+  @Test
+  public void testBasicAuthenticationEmptyUsername() throws Exception {
+    UsernamePasswordCredentials creds = new UsernamePasswordCredentials("", "&@#§$*éà#\"'");
+    testRequest(
+      client -> client.get("somehost", "somepath").authentication(creds),
+      req -> {
+        String auth = req.headers().get(HttpHeaders.AUTHORIZATION);
+        assertEquals("Was expecting authorization header to contain a basic authentication string", creds.toHttpAuthorization(), auth);
+      }
+    );
+  }
 
+  @Test
+  public void testBasicAuthenticationNullUsername() throws Exception {
+    UsernamePasswordCredentials creds = new UsernamePasswordCredentials(null, "&@#§$*éà#\"'");
+    testRequest(
+      client -> client.get("somehost", "somepath").authentication(creds),
+      req -> {
+        String auth = req.headers().get(HttpHeaders.AUTHORIZATION);
+        assertEquals("Was expecting authorization header to contain a basic authentication string", creds.toHttpAuthorization(), auth);
+      }
+    );
+  }
+
+  @Test
+  public void testBasicAuthenticationNullUsername2() throws Exception {
+    testRequest(
+      client -> client.get("somehost", "somepath").basicAuthentication("", "password"),
+      req -> {
+        String auth = req.headers().get(HttpHeaders.AUTHORIZATION);
+        assertEquals("Was expecting authorization header to contain a basic authentication string", "Basic OnBhc3N3b3Jk", auth);
+      }
+    );
+  }
 
   @Test
   public void testBearerTokenAuthentication() throws Exception {
@@ -253,7 +286,7 @@ public class WebClientTest extends WebClientTestBase {
 
     webClient
       .get("http://checkip.amazonaws.com/")
-      .proxy(new ProxyOptions().setPort(proxy.getPort()))
+      .proxy(new ProxyOptions().setPort(proxy.port()))
       .send(ar -> {
         if (ar.succeeded()) {
           // Obtain response
@@ -1556,6 +1589,23 @@ public class WebClientTest extends WebClientTestBase {
   }
 
   @Test
+  public void testRequestOptions() throws Exception {
+    ProxyOptions proxyOptions = new ProxyOptions().setHost("proxy-host");
+    RequestOptions options = new RequestOptions().setHost("another-host").setPort(8080).setSsl(true)
+      .setURI("/test").setTimeout(500).setProxyOptions(proxyOptions).setFollowRedirects(true);
+    HttpRequest<Buffer> request = webClient.request(HttpMethod.GET, options);
+
+    assertThat(request.host(), equalTo("another-host"));
+    assertThat(request.port(), equalTo(8080));
+    assertThat(request.ssl(), equalTo(true));
+    assertThat(request.uri(), equalTo("/test"));
+    assertThat(request.timeout(), equalTo(500l));
+    assertThat(request.followRedirects(), equalTo(true));
+    assertThat(request.proxy(), is(not(equalTo(proxyOptions))));
+    assertThat(request.proxy().getHost(), equalTo("proxy-host"));
+  }
+
+  @Test
   public void testTLSEnabled() throws Exception {
     testTLS(true, true, client -> client.get("/"));
   }
@@ -1598,6 +1648,26 @@ public class WebClientTest extends WebClientTestBase {
   @Test
   public void testTLSDisabledEnableRequestTLSAbsURI() throws Exception {
     testTLS(false, true, client -> client.getAbs("https://" + DEFAULT_HTTPS_HOST + ":" + DEFAULT_HTTPS_PORT));
+  }
+
+  @Test
+  public void testTLSEnabledDisableRequestTLSAbsURIWithOptions() throws Exception {
+    testTLS(true, false, client -> client.request(HttpMethod.GET, new RequestOptions().setAbsoluteURI("http://" + DEFAULT_HTTPS_HOST + ":" + DEFAULT_HTTPS_PORT)));
+  }
+
+  @Test
+  public void testTLSEnabledEnableRequestTLSAbsURIWithOptions() throws Exception {
+    testTLS(true, true, client -> client.request(HttpMethod.GET, new RequestOptions().setAbsoluteURI("https://" + DEFAULT_HTTPS_HOST + ":" + DEFAULT_HTTPS_PORT)));
+  }
+
+  @Test
+  public void testTLSDisabledDisableRequestTLSAbsURIWithOptions() throws Exception {
+    testTLS(false, false, client -> client.request(HttpMethod.GET, new RequestOptions().setAbsoluteURI("http://" + DEFAULT_HTTPS_HOST + ":" + DEFAULT_HTTPS_PORT)));
+  }
+
+  @Test
+  public void testTLSDisabledEnableRequestTLSAbsURIWithOptions() throws Exception {
+    testTLS(false, true, client -> client.request(HttpMethod.GET, new RequestOptions().setAbsoluteURI("https://" + DEFAULT_HTTPS_HOST + ":" + DEFAULT_HTTPS_PORT)));
   }
 
   /**
@@ -1679,7 +1749,7 @@ public class WebClientTest extends WebClientTestBase {
     startServer();
 
     WebClientOptions options = new WebClientOptions();
-    options.setProxyOptions(new ProxyOptions().setPort(proxy.getPort()));
+    options.setProxyOptions(new ProxyOptions().setPort(proxy.port()));
     WebClient client = WebClient.create(vertx, options);
     client
     .get("ftp://ftp.gnu.org/gnu/")
