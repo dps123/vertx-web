@@ -30,6 +30,7 @@ import io.vertx.ext.auth.VertxContextPRNG;
 import io.vertx.ext.auth.authentication.Credentials;
 import io.vertx.ext.auth.authentication.TokenCredentials;
 import io.vertx.ext.auth.oauth2.OAuth2Auth;
+import io.vertx.ext.auth.oauth2.OAuth2FlowType;
 import io.vertx.ext.auth.oauth2.Oauth2Credentials;
 import io.vertx.ext.web.Route;
 import io.vertx.ext.web.RoutingContext;
@@ -107,8 +108,10 @@ public class OAuth2AuthHandlerImpl extends HTTPAuthorizationHandler<OAuth2Auth> 
     }
     // state copy
     if (base.extraParams != null) {
-      extraParams = extraParams.copy();
+      extraParams = base.extraParams.copy();
     }
+    this.callback = base.callback;
+    this.order = base.order;
     // apply the new scopes
     this.scopes = scopes;
     this.openId = scopes != null && scopes.contains("openid");
@@ -434,6 +437,7 @@ public class OAuth2AuthHandlerImpl extends HTTPAuthorizationHandler<OAuth2Auth> 
       }
 
       final Oauth2Credentials credentials = new Oauth2Credentials()
+        .setFlow(OAuth2FlowType.AUTH_CODE)
         .setCode(code);
 
       // the state that was passed to the IdP server. The state can be
