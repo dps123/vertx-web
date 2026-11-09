@@ -20,8 +20,8 @@ import io.vertx.core.Handler;
 import io.vertx.core.Vertx;
 import io.vertx.core.http.HttpMethod;
 import io.vertx.core.http.HttpServerRequest;
-import io.vertx.core.impl.logging.Logger;
-import io.vertx.core.impl.logging.LoggerFactory;
+import io.vertx.core.internal.logging.Logger;
+import io.vertx.core.internal.logging.LoggerFactory;
 import io.vertx.ext.web.AllowForwardHeaders;
 import io.vertx.ext.web.Route;
 import io.vertx.ext.web.Router;
@@ -65,7 +65,8 @@ public class RouterImpl implements Router {
       LOG.trace("Router: " + System.identityHashCode(this) + " accepting request " + request.method() + " " + request.absoluteURI());
     }
 
-    new RoutingContextImpl(null, this, request, state.getRoutes()).next();
+    RoutingContextImpl routingContext = new RoutingContextImpl(null, this, request, state.getRoutes());
+    routingContext.route();
   }
 
   @Override
@@ -171,6 +172,21 @@ public class RouterImpl implements Router {
   @Override
   public Route postWithRegex(String path) {
     return route().method(HttpMethod.POST).pathRegex(path);
+  }
+
+  @Override
+  public Route query() {
+    return route().method(HttpMethod.QUERY);
+  }
+
+  @Override
+  public Route query(String path) {
+    return route(HttpMethod.QUERY, path);
+  }
+
+  @Override
+  public Route queryWithRegex(String path) {
+    return route().method(HttpMethod.QUERY).pathRegex(path);
   }
 
   @Override
@@ -291,19 +307,14 @@ public class RouterImpl implements Router {
   }
 
   @Override
-  @Deprecated
-  public Route mountSubRouter(String mountPoint, Router subRouter) {
-    if (mountPoint.endsWith("*")) {
-      throw new IllegalArgumentException("Don't include * when mounting a sub router");
-    }
-
-    return route(mountPoint + "*")
-      .subRouter(subRouter);
+  public synchronized Router errorHandler(int statusCode, Handler<RoutingContext> errorHandler) {
+    state = state.putErrorHandler(statusCode, errorHandler);
+    return this;
   }
 
   @Override
-  public synchronized Router errorHandler(int statusCode, Handler<RoutingContext> errorHandler) {
-    state = state.putErrorHandler(statusCode, errorHandler);
+  public synchronized Router uncaughtErrorHandler(Handler<RoutingContext> errorHandler) {
+    state = state.setUncaughtErrorHandler(errorHandler);
     return this;
   }
 
@@ -366,4 +377,3 @@ public class RouterImpl implements Router {
       '}';
   }
 }
-

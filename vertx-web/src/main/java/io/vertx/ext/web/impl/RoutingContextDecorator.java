@@ -6,11 +6,10 @@ import io.vertx.core.Handler;
 import io.vertx.core.MultiMap;
 import io.vertx.core.Vertx;
 import io.vertx.core.buffer.Buffer;
-import io.vertx.core.http.Cookie;
 import io.vertx.core.http.HttpMethod;
 import io.vertx.core.http.HttpServerRequest;
 import io.vertx.core.http.HttpServerResponse;
-import io.vertx.ext.auth.User;
+import io.vertx.ext.auth.audit.SecurityAudit;
 import io.vertx.ext.web.*;
 
 import java.nio.charset.Charset;
@@ -52,14 +51,18 @@ public class RoutingContextDecorator implements RoutingContextInternal {
   }
 
   @Override
-  public int addBodyEndHandler(Handler<Void> handler) {
-    return decoratedContext.addBodyEndHandler(handler);
+  public RoutingContextInternal addAllowedMethods(java.util.Set<HttpMethod> allowedMethods) {
+    return decoratedContext.addAllowedMethods(allowedMethods);
   }
 
   @Override
-  @Deprecated
-  public RoutingContext addCookie(io.vertx.core.http.Cookie cookie) {
-    return decoratedContext.addCookie(cookie);
+  public RoutingContextInternal addAllowedContentTypes(java.util.Set<MIMEHeader> allowedContentTypes) {
+    return decoratedContext.addAllowedContentTypes(allowedContentTypes);
+  }
+
+  @Override
+  public int addBodyEndHandler(Handler<Void> handler) {
+    return decoratedContext.addBodyEndHandler(handler);
   }
 
   @Override
@@ -70,18 +73,6 @@ public class RoutingContextDecorator implements RoutingContextInternal {
   @Override
   public int addHeadersEndHandler(Handler<Void> handler) {
     return decoratedContext.addHeadersEndHandler(handler);
-  }
-
-  @Override
-  @Deprecated
-  public int cookieCount() {
-    return decoratedContext.cookieCount();
-  }
-
-  @Override
-  @Deprecated
-  public Map<String, io.vertx.core.http.Cookie> cookieMap() {
-    return decoratedContext.cookieMap();
   }
 
   @Override
@@ -137,6 +128,11 @@ public class RoutingContextDecorator implements RoutingContextInternal {
   }
 
   @Override
+  public void cancelAndCleanupFileUploads() {
+    decoratedContext.cancelAndCleanupFileUploads();
+  }
+
+  @Override
   public <T> T get(String key) {
     return decoratedContext.get(key);
   }
@@ -159,12 +155,6 @@ public class RoutingContextDecorator implements RoutingContextInternal {
   @Override
   public RequestBody body() {
     return decoratedContext.body();
-  }
-
-  @Override
-  @Deprecated
-  public Cookie getCookie(String name) {
-    return decoratedContext.getCookie(name);
   }
 
   @Override
@@ -194,12 +184,6 @@ public class RoutingContextDecorator implements RoutingContextInternal {
   }
 
   @Override
-  @Deprecated
-  public Cookie removeCookie(String name, boolean invalidate) {
-    return decoratedContext.removeCookie(name, invalidate);
-  }
-
-  @Override
   public boolean removeEndHandler(int handlerID) {
     return decoratedContext.removeEndHandler(handlerID);
   }
@@ -220,8 +204,8 @@ public class RoutingContextDecorator implements RoutingContextInternal {
   }
 
   @Override
-  public User user() {
-    return decoratedContext.user();
+  public UserContext userContext() {
+    return decoratedContext.userContext();
   }
 
   @Override
@@ -275,13 +259,11 @@ public class RoutingContextDecorator implements RoutingContextInternal {
   }
 
   @Override
-  @Deprecated
   public void setBody(Buffer body) {
     decoratedContext.setBody(body);
   }
 
   @Override
-  @Deprecated
   public void setSession(Session session) {
     decoratedContext.setSession(session);
   }
@@ -297,13 +279,13 @@ public class RoutingContextDecorator implements RoutingContextInternal {
   }
 
   @Override
-  public void setUser(User user) {
-    decoratedContext.setUser(user);
+  public void setSecurityAudit(SecurityAudit securityAudit) {
+    decoratedContext.setSecurityAudit(securityAudit);
   }
 
   @Override
-  public void clearUser() {
-    decoratedContext.clearUser();
+  public SecurityAudit securityAudit() {
+    return decoratedContext.securityAudit();
   }
 
   @Override

@@ -16,20 +16,18 @@
 
 package io.vertx.ext.web.templ.mvel.impl;
 
-import io.vertx.core.AsyncResult;
+import io.netty.util.internal.PlatformDependent;
 import io.vertx.core.Future;
-import io.vertx.core.Handler;
 import io.vertx.core.Vertx;
 import io.vertx.core.buffer.Buffer;
 import io.vertx.ext.web.common.template.CachingTemplateEngine;
-import io.vertx.ext.web.common.template.impl.TemplateHolder;
-import org.mvel2.integration.impl.ImmutableDefaultFactory;
+import io.vertx.ext.web.common.template.CachedTemplate;
+import io.vertx.ext.web.templ.mvel.MVELTemplateEngine;
+import org.mvel2.integration.impl.MapVariableResolverFactory;
 import org.mvel2.templates.CompiledTemplate;
 import org.mvel2.templates.TemplateCompiler;
 import org.mvel2.templates.TemplateRuntime;
 import org.mvel2.util.StringAppender;
-
-import io.vertx.ext.web.templ.mvel.MVELTemplateEngine;
 
 import java.nio.charset.Charset;
 import java.util.Map;
@@ -47,24 +45,23 @@ public class MVELTemplateEngineImpl extends CachingTemplateEngine<CompiledTempla
   }
 
   @Override
-  public void render(Map<String, Object> context, String templateFile, Handler<AsyncResult<Buffer>> handler) {
+  public Future<Buffer> render(Map<String, Object> context, String templateFile) {
     try {
       String src = adjustLocation(templateFile);
-      TemplateHolder<CompiledTemplate> template = getTemplate(src);
+      CachedTemplate<CompiledTemplate> template = getTemplate(src);
 
       if (template == null) {
-        int idx = src.lastIndexOf('/');
+        int idx = findLastFileSeparator(src);
         String baseDir = "";
         if (idx != -1) {
           baseDir = src.substring(0, idx);
         }
 
         if (!vertx.fileSystem().existsBlocking(src)) {
-          handler.handle(Future.failedFuture("Cannot find template " + src));
-          return;
+          return Future.failedFuture("Cannot find template " + src);
         }
 
-        template = new TemplateHolder<>(
+        template = new CachedTemplate<>(
           TemplateCompiler
           .compileTemplate(
             vertx.fileSystem()
@@ -78,15 +75,20 @@ public class MVELTemplateEngineImpl extends CachingTemplateEngine<CompiledTempla
       final CompiledTemplate mvel = template.template();
       final String baseDir = template.baseDir();
 
-      handler.handle(Future.succeededFuture(
+      return Future.succeededFuture(
         Buffer.buffer(
           (String) new TemplateRuntime(mvel.getTemplate(), null, mvel.getRoot(), baseDir)
-            .execute(new StringAppender(), context, new ImmutableDefaultFactory())
-        )
-      ));
+            .execute(new StringAppender(), context, new MapVariableResolverFactory())
+        ));
     } catch (Exception ex) {
-      handler.handle(Future.failedFuture(ex));
+      return Future.failedFuture(ex);
     }
   }
 
+  private static int findLastFileSeparator(String src) {
+    if (PlatformDependent.isWindows()) {
+      return Math.max(src.lastIndexOf('/'), src.lastIndexOf('\\'));
+    }
+    return src.lastIndexOf('/');
+  }
 }

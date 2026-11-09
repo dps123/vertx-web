@@ -15,7 +15,6 @@
  */
 package io.vertx.ext.web.codec.impl;
 
-import io.vertx.core.AsyncResult;
 import io.vertx.core.Future;
 import io.vertx.core.Handler;
 import io.vertx.core.Promise;
@@ -82,8 +81,8 @@ public class BodyCodecImpl<T> implements BodyCodec<T> {
   }
 
   @Override
-  public void create(Handler<AsyncResult<BodyStream<T>>> handler) {
-    handler.handle(Future.succeededFuture(new BodyStream<T>() {
+  public BodyStream<T> stream() {
+    return new BodyStream<T>() {
 
       final Buffer buffer = Buffer.buffer();
       final Promise<T> state = Promise.promise();
@@ -104,19 +103,14 @@ public class BodyCodecImpl<T> implements BodyCodec<T> {
       }
 
       @Override
-      public void write(Buffer data, Handler<AsyncResult<Void>> handler) {
-        buffer.appendBuffer(data);
-        handler.handle(Future.succeededFuture());
-      }
-
-      @Override
       public Future<Void> write(Buffer data) {
         buffer.appendBuffer(data);
         return Future.succeededFuture();
       }
 
       @Override
-      public void end(Handler<AsyncResult<Void>> handler) {
+      public Future<Void> end() {
+
         if (!state.future().isComplete()) {
           T result;
           if (buffer.length() > 0) {
@@ -124,18 +118,15 @@ public class BodyCodecImpl<T> implements BodyCodec<T> {
               result = decoder.apply(buffer);
             } catch (Throwable t) {
               state.fail(t);
-              if (handler != null) {
-                handler.handle(Future.failedFuture(t));
-              }
-              return;
+              return Future.failedFuture(t);
             }
           } else {
             result = null;
           }
           state.complete(result);
-          if (handler != null) {
-            handler.handle(Future.succeededFuture());
-          }
+          return Future.succeededFuture();
+        } else {
+          return Future.failedFuture("Already ended");
         }
       }
 
@@ -153,6 +144,6 @@ public class BodyCodecImpl<T> implements BodyCodec<T> {
       public WriteStream<Buffer> drainHandler(Handler<Void> handler) {
         return this;
       }
-    }));
+    };
   }
 }

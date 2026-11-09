@@ -15,6 +15,7 @@
  */
 package io.vertx.ext.web.client.impl.cache;
 
+import io.netty.util.internal.StringUtil;
 import io.vertx.core.http.RequestOptions;
 import io.vertx.ext.web.client.HttpRequest;
 import io.vertx.ext.web.client.spi.CacheStore;
@@ -22,8 +23,6 @@ import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.util.Objects;
 
-
-import static io.vertx.ext.auth.impl.Codec.base16Encode;
 
 /**
  * A key for a {@link CacheStore} based on a {@link HttpRequest}.
@@ -33,10 +32,16 @@ import static io.vertx.ext.auth.impl.Codec.base16Encode;
 public class CacheKey extends CacheVariationsKey {
 
   private final String variations;
+  private final String bodyFingerprint;
 
   public CacheKey(RequestOptions request, Vary vary) {
+    this(request, vary, null);
+  }
+
+  public CacheKey(RequestOptions request, Vary vary, String bodyFingerprint) {
     super(request);
     this.variations = vary.toString();
+    this.bodyFingerprint = bodyFingerprint != null ? bodyFingerprint : "";
   }
 
   @Override
@@ -45,10 +50,13 @@ public class CacheKey extends CacheVariationsKey {
       MessageDigest digest = MessageDigest.getInstance("SHA-256");
       digest.update(super.toString().getBytes(StandardCharsets.UTF_8));
       digest.update(variations.getBytes(StandardCharsets.UTF_8));
+      if (!bodyFingerprint.isEmpty()) {
+        digest.update(bodyFingerprint.getBytes(StandardCharsets.UTF_8));
+      }
       byte[] hashed = digest.digest();
-      return base16Encode(hashed);
+      return StringUtil.toHexString(hashed);
     } catch (Exception e) {
-      return super.toString() + "|" + variations;
+      return String.join("|", super.toString(), variations, bodyFingerprint);
     }
   }
 
@@ -62,14 +70,16 @@ public class CacheKey extends CacheVariationsKey {
     }
     CacheKey cacheKey = (CacheKey) o;
     return port == cacheKey.port
+      && method == cacheKey.method
       && host.equals(cacheKey.host)
       && path.equals(cacheKey.path)
       && queryString.equals(cacheKey.queryString)
-      && variations.equals(cacheKey.variations);
+      && variations.equals(cacheKey.variations)
+      && bodyFingerprint.equals(cacheKey.bodyFingerprint);
   }
 
   @Override
   public int hashCode() {
-    return Objects.hash(host, port, path, queryString, variations);
+    return Objects.hash(method, host, port, path, queryString, variations, bodyFingerprint);
   }
 }

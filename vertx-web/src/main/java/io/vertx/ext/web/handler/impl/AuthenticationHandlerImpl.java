@@ -24,6 +24,7 @@ import io.vertx.ext.auth.authentication.AuthenticationProvider;
 import io.vertx.ext.web.RoutingContext;
 import io.vertx.ext.web.Session;
 import io.vertx.ext.web.handler.HttpException;
+import io.vertx.ext.web.impl.UserContextInternal;
 
 /**
  * @author <a href="http://tfox.org">Tim Fox</a>
@@ -59,7 +60,8 @@ public abstract class AuthenticationHandlerImpl<T extends AuthenticationProvider
       ctx.request().pause();
     }
 
-    User user = ctx.user();
+    final User user = ctx.user();
+
     if (user != null) {
       if (mfa != null) {
         // if we're dealing with MFA, the user principal must include a matching mfa
@@ -81,10 +83,10 @@ public abstract class AuthenticationHandlerImpl<T extends AuthenticationProvider
       }
     }
     // perform the authentication
-    authenticate(ctx, authN -> {
-      if (authN.succeeded()) {
-        User authenticated = authN.result();
-        ctx.setUser(authenticated);
+    authenticate(ctx)
+      .onSuccess(authenticated -> {
+        ((UserContextInternal) ctx.userContext())
+          .setUser(authenticated);
         Session session = ctx.session();
         if (session != null) {
           // the user has upgraded from unauthenticated to authenticated
@@ -96,14 +98,13 @@ public abstract class AuthenticationHandlerImpl<T extends AuthenticationProvider
           ctx.request().resume();
         }
         postAuthentication(ctx);
-      } else {
+      })
+      .onFailure(cause -> {
         // to allow further processing if needed
-        Throwable cause = authN.cause();
         if (!ctx.request().isEnded()) {
           ctx.request().resume();
         }
         processException(ctx, cause);
-      }
     });
   }
 

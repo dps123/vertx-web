@@ -16,7 +16,7 @@
 
 package io.vertx.ext.web.templ.pebble;
 
-import com.mitchellbosecke.pebble.PebbleEngine;
+import io.pebbletemplates.pebble.PebbleEngine;
 import io.vertx.codegen.annotations.GenIgnore;
 import io.vertx.codegen.annotations.VertxGen;
 import io.vertx.core.Vertx;
@@ -76,4 +76,7 @@ public interface PebbleTemplateEngine extends TemplateEngine {
   static PebbleTemplateEngine create(Vertx vertx, String extension, PebbleEngine engine) {
     return new PebbleTemplateEngineImpl(vertx, extension, engine);
   }
+
+  @Override
+  PebbleEngine unwrap();
 }

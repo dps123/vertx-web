@@ -23,7 +23,7 @@ import java.util.Objects;
 
 /**
  * Wraps a handler that would normally block and turn it into a non-blocking handler.
- * This is done by calling {@link io.vertx.core.Vertx#executeBlocking(Handler, Handler)}
+ * This is done by calling {@link io.vertx.core.Vertx#executeBlocking)}
  * and wrapping the context to overload {@link RoutingContext#next()} so that
  * the next handler is run on the original event loop
  *
@@ -44,10 +44,10 @@ public class BlockingHandlerDecorator implements Handler<RoutingContext> {
   @Override
   public void handle(RoutingContext context) {
     Route currentRoute = context.currentRoute();
-    context.vertx().executeBlocking(fut -> {
+    context.vertx().executeBlocking(() -> {
       decoratedHandler.handle(new RoutingContextDecorator(currentRoute, (RoutingContextInternal) context));
-      fut.complete();
-    }, ordered, res -> {
+      return null;
+    }, ordered).onComplete(res -> {
       if (res.failed()) {
         // This means an exception was thrown from the blocking handler
         context.fail(res.cause());

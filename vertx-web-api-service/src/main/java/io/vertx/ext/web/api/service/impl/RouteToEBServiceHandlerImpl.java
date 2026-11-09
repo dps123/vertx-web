@@ -1,11 +1,9 @@
 package io.vertx.ext.web.api.service.impl;
 
 import io.vertx.codegen.annotations.Fluent;
-import io.vertx.core.AsyncResult;
 import io.vertx.core.MultiMap;
 import io.vertx.core.eventbus.DeliveryOptions;
 import io.vertx.core.eventbus.EventBus;
-import io.vertx.core.eventbus.Message;
 import io.vertx.core.http.HttpHeaders;
 import io.vertx.core.http.HttpServerResponse;
 import io.vertx.core.json.JsonObject;
@@ -48,7 +46,7 @@ public class RouteToEBServiceHandlerImpl implements RouteToEBServiceHandler {
       deliveryOptions = this.deliveryOptions;
     }
 
-    eventBus.request(address, buildPayload(routingContext), deliveryOptions, (AsyncResult<Message<JsonObject>> res) -> {
+    eventBus.<JsonObject>request(address, buildPayload(routingContext), deliveryOptions).onComplete(res -> {
       if (res.succeeded()) {
         ServiceResponse op = new ServiceResponse(res.result().body());
         HttpServerResponse response = routingContext.response().setStatusCode(op.getStatusCode());

@@ -20,23 +20,23 @@ import io.vertx.core.MultiMap;
 import io.vertx.core.http.HttpMethod;
 import io.vertx.core.http.HttpServerRequest;
 import io.vertx.core.http.HttpVersion;
-import io.vertx.core.impl.logging.Logger;
-import io.vertx.core.impl.logging.LoggerFactory;
+import io.vertx.core.internal.logging.Logger;
+import io.vertx.core.internal.logging.LoggerFactory;
 import io.vertx.core.net.SocketAddress;
+import io.vertx.ext.auth.User;
 import io.vertx.ext.web.RoutingContext;
 import io.vertx.ext.web.handler.LoggerFormat;
 import io.vertx.ext.web.handler.LoggerFormatter;
 import io.vertx.ext.web.handler.LoggerHandler;
 import io.vertx.ext.web.impl.Utils;
 
-import java.util.function.Function;
-
 /** # Logger
  *
- * Logger for request. There are 3 formats included:
+ * Logger for request. There are 4 formats included:
  * 1. DEFAULT
- * 2. SHORT
- * 3. TINY
+ * 2. COMBINED
+ * 3. SHORT
+ * 4. TINY
  *
  * Default tries to log in a format similar to Apache log format, while the other 2 are more suited to development mode.
  * The logging depends on Vert.x logger settings and the severity of the error, so for errors with status greater or
@@ -47,7 +47,7 @@ import java.util.function.Function;
  */
 public class LoggerHandlerImpl implements LoggerHandler {
 
-  private static final Logger LOG = LoggerFactory.getLogger(LoggerHandlerImpl.class);
+  private static final Logger LOG = LoggerFactory.getLogger(LoggerHandler.class);
 
   /** log before request or after
    */
@@ -57,7 +57,6 @@ public class LoggerHandlerImpl implements LoggerHandler {
    */
   private final LoggerFormat format;
 
-  private Function<HttpServerRequest, String> customFormatter;
   private LoggerFormatter logFormatter;
 
   public LoggerHandlerImpl(boolean immediate, LoggerFormat format) {
@@ -107,18 +106,53 @@ public class LoggerHandlerImpl implements LoggerHandler {
     final MultiMap headers = request.headers();
     int status = request.response().getStatusCode();
     String message = null;
+    String referrer = null;
+    String userAgent = null;
 
     switch (format) {
       case DEFAULT:
         // as per RFC1945 the header is referer but it is not mandatory some implementations use referrer
-        String referrer = headers.contains("referrer") ? headers.get("referrer") : headers.get("referer");
-        String userAgent = request.headers().get("user-agent");
+        referrer = headers.contains("referrer") ? headers.get("referrer") : headers.get("referer");
+        userAgent = request.headers().get("user-agent");
         referrer = referrer == null ? "-" : referrer;
         userAgent = userAgent == null ? "-" : userAgent;
 
         message = String.format("%s - - [%s] \"%s %s %s\" %d %d \"%s\" \"%s\"",
           remoteClient,
           Utils.formatRFC1123DateTime(timestamp),
+          method,
+          uri,
+          versionFormatted,
+          status,
+          contentLength,
+          referrer,
+          userAgent);
+        break;
+      case COMBINED:
+        // as per RFC1945 the header is referer but it is not mandatory some implementations use referrer
+        referrer = headers.contains("referrer") ? headers.get("referrer") : headers.get("referer");
+        userAgent = request.headers().get("user-agent");
+        referrer = referrer == null ? "-" : referrer;
+        userAgent = userAgent == null ? "-" : userAgent;
+
+        User user = context.user();
+        String userId = "-";
+        // user may be null if no auth was performed
+        if (user != null) {
+          // subject may be null if no auth was performed
+          if (user.subject() != null) {
+            userId = user.subject();
+            // if the userId contains spaces, we need to quote it
+            if (userId.indexOf(' ') != -1) {
+              userId = "\"" + userId + "\"";
+            }
+          }
+        }
+
+        message = String.format("%s - %s [%s] \"%s %s %s\" %d %d \"%s\" \"%s\"",
+          remoteClient,
+          userId,
+          Utils.formatStrftimeDateTime(timestamp),
           method,
           uri,
           versionFormatted,
@@ -147,11 +181,7 @@ public class LoggerHandlerImpl implements LoggerHandler {
         break;
       case CUSTOM:
         try {
-          if (logFormatter != null) {
-            message = logFormatter.format(context, (System.currentTimeMillis() - timestamp));
-          } else {
-            message = customFormatter.apply(request);
-          }
+          message = logFormatter.format(context, (System.currentTimeMillis() - timestamp));
         } catch (RuntimeException e) {
           // if an error happens at the user side
           // log it instead
@@ -183,22 +213,10 @@ public class LoggerHandlerImpl implements LoggerHandler {
     if (immediate) {
       log(context, timestamp, remoteClient, version, method, uri);
     } else {
-      context.addBodyEndHandler(v -> log(context, timestamp, remoteClient, version, method, uri));
+      context.addEndHandler(v -> log(context, timestamp, remoteClient, version, method, uri));
     }
 
     context.next();
-  }
-
-  @Override
-  @Deprecated
-  public LoggerHandler customFormatter(Function<HttpServerRequest, String> formatter) {
-    if (format != LoggerFormat.CUSTOM) {
-      throw new IllegalStateException("Setting a formatter requires the handler to be set to CUSTOM format");
-    }
-
-    this.customFormatter = formatter;
-
-    return this;
   }
 
   @Override

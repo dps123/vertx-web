@@ -19,13 +19,11 @@ package io.vertx.ext.web.templ.freemarker.impl;
 import freemarker.cache.NullCacheStorage;
 import freemarker.template.Configuration;
 import freemarker.template.Template;
-import io.vertx.core.AsyncResult;
 import io.vertx.core.Future;
-import io.vertx.core.Handler;
 import io.vertx.core.Vertx;
 import io.vertx.core.buffer.Buffer;
 import io.vertx.ext.web.common.template.CachingTemplateEngine;
-import io.vertx.ext.web.common.template.impl.TemplateHolder;
+import io.vertx.ext.web.common.template.CachedTemplate;
 import io.vertx.ext.web.templ.freemarker.FreeMarkerTemplateEngine;
 
 import java.io.ByteArrayOutputStream;
@@ -50,12 +48,12 @@ public class FreeMarkerTemplateEngineImpl extends CachingTemplateEngine<Template
   }
 
   @Override
-  public <T> T unwrap() {
-    return (T) config;
+  public Configuration unwrap() {
+    return config;
   }
 
   @Override
-  public void render(Map<String, Object> context, String templateFile, Handler<AsyncResult<Buffer>> handler) {
+  public Future<Buffer> render(Map<String, Object> context, String templateFile) {
     try {
       // respect the locale if present
       Locale locale = context.containsKey("lang") ?
@@ -63,23 +61,23 @@ public class FreeMarkerTemplateEngineImpl extends CachingTemplateEngine<Template
         Locale.getDefault();
       String src = adjustLocation(templateFile);
       String key = src + "_" + locale.toLanguageTag();
-      TemplateHolder<Template> template = getTemplate(key);
+      CachedTemplate<Template> template = getTemplate(key);
       if (template == null) {
         // real compile
         synchronized (this) {
           // Compile
-          template = new TemplateHolder<>(config.getTemplate(src, locale));
+          template = new CachedTemplate<>(config.getTemplate(src, locale));
         }
         putTemplate(key, template);
       }
 
       try (ByteArrayOutputStream baos = new ByteArrayOutputStream()) {
         template.template().process(context, new OutputStreamWriter(baos));
-        handler.handle(Future.succeededFuture(Buffer.buffer(baos.toByteArray())));
+        return Future.succeededFuture(Buffer.buffer(baos.toByteArray()));
       }
 
     } catch (Exception ex) {
-      handler.handle(Future.failedFuture(ex));
+      return Future.failedFuture(ex);
     }
   }
 }

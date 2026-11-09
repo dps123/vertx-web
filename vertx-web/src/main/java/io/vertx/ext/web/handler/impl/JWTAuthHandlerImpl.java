@@ -16,19 +16,24 @@
 
 package io.vertx.ext.web.handler.impl;
 
-import io.vertx.core.AsyncResult;
 import io.vertx.core.Future;
-import io.vertx.core.Handler;
+import io.vertx.core.VertxException;
 import io.vertx.core.json.JsonObject;
 import io.vertx.ext.auth.User;
+import io.vertx.ext.auth.audit.Marker;
+import io.vertx.ext.auth.audit.SecurityAudit;
 import io.vertx.ext.auth.authentication.TokenCredentials;
 import io.vertx.ext.auth.jwt.JWTAuth;
 import io.vertx.ext.web.RoutingContext;
 import io.vertx.ext.web.handler.HttpException;
 import io.vertx.ext.web.handler.JWTAuthHandler;
+import io.vertx.ext.web.impl.RoutingContextInternal;
+import io.vertx.ext.web.internal.handler.ScopedAuthentication;
 
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
+import java.util.Objects;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
@@ -38,60 +43,64 @@ import java.util.stream.Stream;
 public class JWTAuthHandlerImpl extends HTTPAuthorizationHandler<JWTAuth> implements JWTAuthHandler, ScopedAuthentication<JWTAuthHandler> {
 
   private final List<String> scopes;
-  private final String delimiter;
+  private String delimiter;
 
   public JWTAuthHandlerImpl(JWTAuth authProvider, String realm) {
     super(authProvider, Type.BEARER, realm);
-    scopes = new ArrayList<>();
-    this.delimiter  = " ";
+    scopes = Collections.emptyList();
+    this.delimiter = " ";
   }
 
   private JWTAuthHandlerImpl(JWTAuthHandlerImpl base, List<String> scopes, String delimiter) {
     super(base.authProvider, Type.BEARER, base.realm);
+    Objects.requireNonNull(scopes, "scopes cannot be null");
     this.scopes = scopes;
+    Objects.requireNonNull(delimiter, "delimiter cannot be null");
     this.delimiter = delimiter;
   }
 
   @Override
-  public void authenticate(RoutingContext context, Handler<AsyncResult<User>> handler) {
+  public Future<User> authenticate(RoutingContext context) {
 
-    parseAuthorization(context, parseAuthorization -> {
-      if (parseAuthorization.failed()) {
-        handler.handle(Future.failedFuture(parseAuthorization.cause()));
-        return;
-      }
-
-      String token = parseAuthorization.result();
-      int segments = 0;
-      for (int i = 0; i < token.length(); i++) {
-        char c = token.charAt(i);
-        if (c == '.') {
-          if (++segments == 3) {
-            handler.handle(Future.failedFuture(new HttpException(400, "Too many segments in token")));
-            return;
+    return parseAuthorization(context)
+      .compose(token -> {
+        int segments = 0;
+        for (int i = 0; i < token.length(); i++) {
+          char c = token.charAt(i);
+          if (c == '.') {
+            if (++segments == 3) {
+              return Future.failedFuture(new HttpException(400, "Too many segments in token"));
+            }
+            continue;
           }
-          continue;
+          if (Character.isLetterOrDigit(c) || c == '-' || c == '_') {
+            continue;
+          }
+          // invalid character
+          return Future.failedFuture(new HttpException(400, "Invalid character in token: " + (int) c));
         }
-        if (Character.isLetterOrDigit(c) || c == '-' || c == '_') {
-          continue;
-        }
-        // invalid character
-        handler.handle(Future.failedFuture(new HttpException(400, "Invalid character in token: " + (int) c)));
-        return;
-      }
 
-      authProvider.authenticate(new TokenCredentials(token), authn -> {
-        if (authn.failed()) {
-          handler.handle(Future.failedFuture(new HttpException(401, authn.cause())));
-        } else {
-          handler.handle(authn);
-        }
+        final TokenCredentials credentials = new TokenCredentials(token);
+        final SecurityAudit audit = ((RoutingContextInternal) context).securityAudit();
+        audit.credentials(credentials);
+
+        return
+          authProvider
+            .authenticate(new TokenCredentials(token))
+            .andThen(op -> audit.audit(Marker.AUTHENTICATION, op.succeeded()))
+            .recover(err -> Future.failedFuture(new HttpException(401, err)))
+            // validate the scopes eagerly, so chained handlers (ChainAuthHandler) can
+            // recover from a scope mismatch and attempt the next handler in the chain
+            .compose(user ->
+                validateScopes(context, user)
+                .recover(err -> Future.failedFuture(new HttpException(403, err)))
+            );
       });
-    });
   }
 
   @Override
   public JWTAuthHandler withScope(String scope) {
+    Objects.requireNonNull(scope, "scope cannot be null");
     List<String> updatedScopes = new ArrayList<>(this.scopes);
     updatedScopes.add(scope);
     return new JWTAuthHandlerImpl(this, updatedScopes, delimiter);
@@ -99,12 +108,15 @@ public class JWTAuthHandlerImpl extends HTTPAuthorizationHandler<JWTAuth> implem
 
   @Override
   public JWTAuthHandler withScopes(List<String> scopes) {
+    Objects.requireNonNull(scopes, "scopes cannot be null");
     return new JWTAuthHandlerImpl(this, scopes, delimiter);
   }
 
   @Override
-  public JWTAuthHandler scopeDelimiter(String delimeter) {
-    return new JWTAuthHandlerImpl(this, scopes, delimeter);
+  public JWTAuthHandler scopeDelimiter(String delimiter) {
+    Objects.requireNonNull(delimiter, "delimiter cannot be null");
+    this.delimiter = delimiter;
+    return this;
   }
 
   /**
@@ -115,27 +127,45 @@ public class JWTAuthHandlerImpl extends HTTPAuthorizationHandler<JWTAuth> implem
     final User user = ctx.user();
     if (user == null) {
       // bad state
-      ctx.fail(403, new IllegalStateException("no user in the context"));
+      ctx.fail(403, new VertxException("no user in the context", true));
       return;
     }
     // the user is authenticated, however the user may not have all the required scopes
+    validateScopes(ctx, user)
+      .onSuccess(u -> ctx.next())
+      .onFailure(err -> ctx.fail(403, err));
+  }
+
+  @Override
+  public Future<Void> verifyScopes(RoutingContext ctx, User user) {
+    return validateScopes(ctx, user).mapEmpty();
+  }
+
+  /**
+   * Verifies that the given user token contains all the scopes required by this handler
+   * (or by the route metadata).
+   *
+   * @return a succeeded future with the given user if the scopes are valid, a failed future
+   *         with the validation failure otherwise
+   */
+  private Future<User> validateScopes(RoutingContext ctx, User user) {
+    final List<String> scopes = getScopesOrSearchMetadata(this.scopes, ctx);
+
     if (scopes.size() > 0) {
       final JsonObject jwt = user.get("accessToken");
       if (jwt == null) {
-        ctx.fail(403, new IllegalStateException("Invalid JWT: null"));
-        return;
+        return Future.failedFuture(new VertxException("Invalid JWT: null", true));
       }
 
-      if(jwt.getValue("scope") == null) {
-        ctx.fail(403, new IllegalStateException("Invalid JWT: scope claim is required"));
-        return;
+      if (jwt.getValue("scope") == null) {
+        return Future.failedFuture(new VertxException("Invalid JWT: scope claim is required", true));
       }
 
       List<?> target;
       if (jwt.getValue("scope") instanceof String) {
         target =
           Stream.of(jwt.getString("scope")
-            .split(delimiter))
+              .split(delimiter))
             .collect(Collectors.toList());
       } else {
         target = jwt.getJsonArray("scope").getList();
@@ -144,12 +174,11 @@ public class JWTAuthHandlerImpl extends HTTPAuthorizationHandler<JWTAuth> implem
       if (target != null) {
         for (String scope : scopes) {
           if (!target.contains(scope)) {
-            ctx.fail(403, new IllegalStateException("JWT scopes != handler scopes"));
-            return;
+            return Future.failedFuture(new VertxException("JWT scopes != handler scopes", true));
           }
         }
       }
     }
-    ctx.next();
+    return Future.succeededFuture(user);
   }
 }

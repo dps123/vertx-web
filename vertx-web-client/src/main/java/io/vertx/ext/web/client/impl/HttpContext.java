@@ -15,21 +15,18 @@
  */
 package io.vertx.ext.web.client.impl;
 
-import io.netty.handler.codec.http.multipart.HttpPostRequestEncoder;
 import io.vertx.core.*;
 import io.vertx.core.buffer.Buffer;
-import io.vertx.core.http.HttpClientRequest;
-import io.vertx.core.http.HttpClientResponse;
-import io.vertx.core.http.HttpHeaders;
-import io.vertx.core.http.RequestOptions;
-import io.vertx.core.http.impl.HttpClientInternal;
+import io.vertx.core.http.*;
+import io.vertx.core.internal.http.HttpClientInternal;
+import io.vertx.core.internal.ContextInternal;
+import io.vertx.core.internal.PromiseInternal;
 import io.vertx.core.json.Json;
 import io.vertx.core.json.JsonObject;
 import io.vertx.core.streams.Pipe;
-import io.vertx.core.streams.ReadStream;
 import io.vertx.ext.web.client.HttpRequest;
 import io.vertx.ext.web.client.HttpResponse;
-import io.vertx.ext.web.client.WebClientOptions;
+import io.vertx.ext.web.client.WebClientConfig;
 import io.vertx.ext.web.client.spi.CacheStore;
 import io.vertx.ext.web.codec.spi.BodyStream;
 import io.vertx.ext.web.multipart.MultipartForm;
@@ -41,11 +38,11 @@ import java.util.*;
  */
 public class HttpContext<T> {
 
-  private final Handler<AsyncResult<HttpResponse<T>>> handler;
   private final HttpClientInternal client;
-  private final WebClientOptions options;
+  private final WebClientConfig options;
   private final List<Handler<HttpContext<?>>> interceptors;
-  private Context context;
+  private final ContextInternal context;
+  private final PromiseInternal<HttpResponse<T>> promise;
   private HttpRequestImpl<T> request;
   private Object body;
   private String contentType;
@@ -57,25 +54,33 @@ public class HttpContext<T> {
   private RequestOptions requestOptions;
   private HttpClientRequest clientRequest;
   private HttpClientResponse clientResponse;
-  private Promise<HttpClientRequest> requestPromise;
   private HttpResponse<T> response;
   private Throwable failure;
   private int redirects;
   private List<String> redirectedLocations = Collections.emptyList();
   private CacheStore privateCacheStore;
 
-  HttpContext(HttpClientInternal client, WebClientOptions options, List<Handler<HttpContext<?>>> interceptors, Handler<AsyncResult<HttpResponse<T>>> handler) {
-    this.handler = handler;
+  HttpContext(ContextInternal context, HttpClientInternal client, WebClientConfig options, List<Handler<HttpContext<?>>> interceptors, PromiseInternal<HttpResponse<T>> promise) {
+    this.context = context;
     this.client = client;
     this.options = options;
     this.interceptors = interceptors;
+    this.promise = promise;
   }
 
   /**
-   * @return a duplicate of this context
+   * @return a duplicate of this context, detached from this context's response promise so it can
+   * run in the background (e.g. a stale-while-revalidate refresh) without completing the original
+   * request
    */
   public HttpContext<T> duplicate() {
-    return new HttpContext<>(client, options, interceptors, handler);
+    HttpContext<T> duplicate = new HttpContext<>(context, client, options, interceptors, context.promise());
+    duplicate.privateCacheStore = privateCacheStore;
+    return duplicate;
+  }
+
+  public Future<HttpResponse<T>> future() {
+    return promise.future();
   }
 
   /**
@@ -113,7 +118,7 @@ public class HttpContext<T> {
     return requestOptions;
   }
 
-  public void setRequestOptions(RequestOptions requestOptions) {
+  public void requestOptions(RequestOptions requestOptions) {
     this.requestOptions = requestOptions;
   }
 
@@ -171,7 +176,7 @@ public class HttpContext<T> {
   /**
    * @return all traced redirects
    */
-  public List<String> getRedirectedLocations() {
+  public List<String> redirectedLocations() {
     return redirectedLocations;
   }
 
@@ -266,6 +271,9 @@ public class HttpContext<T> {
           if (ar.succeeded()) {
             RequestOptions options = ar.result();
             requestOptions = options;
+            if (options.getMethod() == HttpMethod.GET || options.getMethod() == HttpMethod.HEAD) {
+              this.body = null;
+            }
             fire(ClientPhase.FOLLOW_REDIRECT);
           } else {
             fail(ar.cause());
@@ -390,15 +398,26 @@ public class HttpContext<T> {
   }
 
   private void handleFailure() {
-    handler.handle(Future.failedFuture(failure));
+    HttpClientRequest req = clientRequest;
+    if (req != null) {
+      clientRequest = null;
+      req.reset();
+    }
+    if (body != null) {
+      if (body instanceof Pipe) {
+        ((Pipe<?>)body).close();
+      }
+      body = null;
+    }
+    promise.tryFail(failure);
   }
 
   private void handleDispatchResponse() {
-    handler.handle(Future.succeededFuture(response));
+    body = null;
+    promise.tryComplete(response);
   }
 
   private void handlePrepareRequest() {
-    context = client.vertx().getOrCreateContext();
     redirects = 0;
     RequestOptions requestOptions;
     try {
@@ -415,148 +434,150 @@ public class HttpContext<T> {
         contentType = prev;
       }
     }
+    if (body instanceof Pipe) {
+      //
+    } else if (body instanceof MultipartForm) {
+      ClientForm form;
+      try {
+        boolean multipart = "multipart/form-data".equals(contentType);
+        if (multipart) {
+          ClientMultipartForm multipartForm = ClientMultipartForm.multipartForm();
+          multipartForm.mixed(request.multipartMixed());
+          form = multipartForm;
+        } else {
+          form = ClientForm.form();
+        }
+        form.charset(((MultipartForm)body).getCharset());
+        ((MultipartForm)body).forEach(part -> {
+          if (part.isAttribute()) {
+            form.attribute(part.name(), part.value());
+          } else {
+            ClientMultipartForm multipartForm = (ClientMultipartForm) form;
+            if (part.isText()) {
+              if (part.pathname() != null) {
+                multipartForm.textFileUpload(part.name(), part.filename(), part.mediaType(), part.pathname());
+              } else {
+                multipartForm.textFileUpload(part.name(), part.filename(), part.mediaType(), part.content());
+              }
+            } else {
+              if (part.pathname() != null) {
+                multipartForm.binaryFileUpload(part.name(), part.filename(), part.mediaType(), part.pathname());
+              } else {
+                multipartForm.binaryFileUpload(part.name(), part.filename(), part.mediaType(), part.content());
+              }
+            }
+          }
+        });
+        this.body = form;
+      } catch (Exception e) {
+        fail(e);
+        return;
+      }
+    } else if (body == null && "application/json".equals(contentType)) {
+      body = Buffer.buffer("null");
+    } else if (body instanceof JsonObject) {
+      body = ((JsonObject) body).toBuffer();
+    } else if (body != null && !(body instanceof Buffer)) {
+      body = Json.encodeToBuffer(body);
+    }
+
+    if (body instanceof Buffer) {
+      Buffer buffer = (Buffer) body;
+      requestOptions.putHeader(HttpHeaders.CONTENT_LENGTH, "" + buffer.length());
+    }
+
     createRequest(requestOptions);
   }
 
   private void handleCreateRequest() {
-    requestPromise = Promise.promise();
-    if (body != null || "application/json".equals(contentType)) {
-      if (body instanceof MultipartForm) {
-        MultipartFormUpload multipartForm;
-        try {
-          boolean multipart = "multipart/form-data".equals(contentType);
-          HttpPostRequestEncoder.EncoderMode encoderMode = this.request.multipartMixed() ? HttpPostRequestEncoder.EncoderMode.RFC1738 : HttpPostRequestEncoder.EncoderMode.HTML5;
-          multipartForm = new MultipartFormUpload(context,  (MultipartForm) this.body, multipart, encoderMode);
-          this.body = multipartForm;
-        } catch (Exception e) {
-          fail(e);
-          return;
-        }
-        for (String headerName : this.request.headers().names()) {
-          requestOptions.putHeader(headerName, this.request.headers().get(headerName));
-        }
-        multipartForm.headers().forEach(header -> {
-          requestOptions.putHeader(header.getKey(), header.getValue());
-        });
-      }
-      if (body instanceof ReadStream<?>) {
-        ReadStream<Buffer> stream = (ReadStream<Buffer>) body;
-        Pipe<Buffer> pipe = stream.pipe(); // Shouldn't this be called in an earlier phase ?
-        requestPromise.future().onComplete(ar -> {
-          if (ar.succeeded()) {
-            HttpClientRequest req = ar.result();
-            if (this.request.headers == null || !this.request.headers.contains(HttpHeaders.CONTENT_LENGTH)) {
-              req.setChunked(true);
-            }
-            pipe.endOnFailure(false);
-            pipe.to(req, ar2 -> {
-              clientRequest = null;
-              if (ar2.failed()) {
-                req.reset(0L, ar2.cause());
-              }
-            });
-            if (body instanceof MultipartFormUpload) {
-              ((MultipartFormUpload) body).run();
-            }
-          } else {
-            // Test this
-            clientRequest = null;
-            pipe.close();
-          }
-        });
-      } else {
-        Buffer buffer;
-        if (body instanceof Buffer) {
-          buffer = (Buffer) body;
-        } else if (body instanceof JsonObject) {
-          buffer = Buffer.buffer(((JsonObject)body).encode());
-        } else {
-          buffer = Buffer.buffer(Json.encode(body));
-        }
-        requestOptions.putHeader(HttpHeaders.CONTENT_LENGTH, "" + buffer.length());
-        requestPromise.future().onSuccess(request -> {
-          clientRequest = null;
-          request.end(buffer);
-        });
-      }
-    } else {
-      requestPromise.future().onSuccess(request -> {
-        clientRequest = null;
-        request.end();
-      });
-    }
     client.request(requestOptions)
       .onComplete(ar1 -> {
         if (ar1.succeeded()) {
           sendRequest(ar1.result());
         } else {
           fail(ar1.cause());
-          requestPromise.fail(ar1.cause());
         }
       });
   }
 
   private void handleReceiveResponse() {
+    BodyStream<T> stream;
+    try {
+      stream = request.bodyCodec().stream();
+    } catch (Exception e) {
+      fail(e);
+      return;
+    }
     HttpClientResponse resp = clientResponse;
-    Context context = Vertx.currentContext();
-    Promise<HttpResponse<T>> promise = Promise.promise();
-    promise.future().onComplete(r -> {
-      // We are running on a context (the HTTP client mandates it)
-      context.runOnContext(v -> {
-        if (r.succeeded()) {
-          dispatchResponse(r.result());
+    resp
+      .pipeTo(stream)
+      .compose(v -> stream.result())
+      .map(result -> new HttpResponseImpl<>(
+        resp.version(),
+        resp.statusCode(),
+        resp.statusMessage(),
+        resp.headers(),
+        resp.trailers(),
+        resp.cookies(),
+        result,
+        redirectedLocations
+      )).onComplete(ar -> {
+        if (ar.succeeded()) {
+          dispatchResponse(ar.result());
         } else {
-          fail(r.cause());
+          fail(ar.cause());
         }
       });
-    });
-    resp.exceptionHandler(err -> {
-      if (!promise.future().isComplete()) {
-        promise.fail(err);
-      }
-    });
-    Pipe<Buffer> pipe = resp.pipe();
-    request.bodyCodec().create(ar1 -> {
-      if (ar1.succeeded()) {
-        BodyStream<T> stream = ar1.result();
-        pipe.to(stream, ar2 -> {
-          if (ar2.succeeded()) {
-            stream.result().onComplete(ar3 -> {
-              if (ar3.succeeded()) {
-                promise.complete(new HttpResponseImpl<>(
-                  resp.version(),
-                  resp.statusCode(),
-                  resp.statusMessage(),
-                  resp.headers(),
-                  resp.trailers(),
-                  resp.cookies(),
-                  stream.result().result(),
-                  redirectedLocations
-                ));
-              } else {
-                promise.fail(ar3.cause());
-              }
-            });
-          } else {
-            promise.fail(ar2.cause());
-          }
-        });
-      } else {
-        pipe.close();
-        fail(ar1.cause());
-      }
-    });
   }
 
   private void handleSendRequest() {
-    clientRequest.response(ar -> {
+    clientRequest.response().onComplete(ar -> {
+      clientRequest = null;
       if (ar.succeeded()) {
         receiveResponse(ar.result().pause());
       } else {
         fail(ar.cause());
       }
     });
-    requestPromise.complete(clientRequest);
+    try {
+      doSendRequest(clientRequest);
+    } catch (Exception e) {
+      fail(e);
+    }
+  }
+
+  private void doSendRequest(HttpClientRequest request) {
+    Object bodyToSend = body;
+    if (bodyToSend != null) {
+      if (bodyToSend instanceof Pipe) {
+        Pipe<Buffer> pipe = (Pipe<Buffer>) bodyToSend;
+        // From now on, the pipe is owned by this method: the failure phase must not close it
+        body = null;
+        Future<Void> piped;
+        try {
+          if (this.request.headers == null || !this.request.headers.contains(HttpHeaders.CONTENT_LENGTH)) {
+            request.setChunked(true);
+          }
+          pipe.endOnFailure(false);
+          piped = pipe.to(request);
+        } catch (Exception e) {
+          pipe.close();
+          throw e;
+        }
+        piped.onComplete(ar2 -> {
+          if (ar2.failed()) {
+            request.reset(0L, ar2.cause());
+          }
+        });
+      } else if (bodyToSend instanceof ClientForm) {
+        request.send((ClientForm) bodyToSend);
+      } else {
+        Buffer buffer = (Buffer) bodyToSend;
+        request.send(buffer);
+      }
+    } else {
+      request.send();
+    }
   }
 
   public <T> T get(String key) {

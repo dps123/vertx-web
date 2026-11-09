@@ -1,5 +1,5 @@
 /*
- * Copyright 2015 Red Hat, Inc.
+ * Copyright 2024 Red Hat, Inc.
  *
  *  All rights reserved. This program and the accompanying materials
  *  are made available under the terms of the Eclipse Public License v1.0
@@ -16,26 +16,23 @@
 package io.vertx.ext.web.handler.impl;
 
 import io.vertx.core.Vertx;
+import io.vertx.core.VertxException;
 import io.vertx.core.http.Cookie;
 import io.vertx.core.http.CookieSameSite;
-import io.vertx.core.http.HttpMethod;
-import io.vertx.core.impl.logging.Logger;
-import io.vertx.core.impl.logging.LoggerFactory;
-import io.vertx.ext.auth.VertxContextPRNG;
+import io.vertx.core.internal.logging.Logger;
+import io.vertx.core.internal.logging.LoggerFactory;
+import io.vertx.ext.auth.prng.VertxContextPRNG;
 import io.vertx.ext.web.RoutingContext;
 import io.vertx.ext.web.Session;
 import io.vertx.ext.web.handler.CSRFHandler;
 import io.vertx.ext.web.handler.SessionHandler;
 import io.vertx.ext.web.impl.Origin;
+import io.vertx.ext.web.impl.RoutingContextInternal;
+import io.vertx.ext.web.impl.Signature;
+import io.vertx.ext.web.impl.Utils;
 
-import javax.crypto.Mac;
-import javax.crypto.spec.SecretKeySpec;
 import java.nio.charset.StandardCharsets;
-import java.security.InvalidKeyException;
 import java.security.MessageDigest;
-import java.security.NoSuchAlgorithmException;
-
-import static io.vertx.ext.auth.impl.Codec.base64UrlEncode;
 
 /**
  * @author <a href="mailto:pmlopes@gmail.com">Paulo Lopes</a>
@@ -45,7 +42,7 @@ public class CSRFHandlerImpl implements CSRFHandler {
   private static final Logger LOG = LoggerFactory.getLogger(CSRFHandlerImpl.class);
 
   private final VertxContextPRNG random;
-  private final Mac mac;
+  private final Signature signature;
 
   private boolean nagHttps;
   private String cookieName = DEFAULT_COOKIE_NAME;
@@ -58,16 +55,8 @@ public class CSRFHandlerImpl implements CSRFHandler {
   private boolean cookieSecure;
 
   public CSRFHandlerImpl(final Vertx vertx, final String secret) {
-    try {
-      if (secret.length() <= 8) {
-        LOG.warn("CSRF secret is very short (<= 8 bytes)");
-      }
-      random = VertxContextPRNG.current(vertx);
-      mac = Mac.getInstance("HmacSHA256");
-      mac.init(new SecretKeySpec(secret.getBytes(StandardCharsets.UTF_8), "HmacSHA256"));
-    } catch (NoSuchAlgorithmException | InvalidKeyException e) {
-      throw new RuntimeException(e);
-    }
+    random = VertxContextPRNG.current(vertx);
+    signature = new Signature(secret);
   }
 
   @Override
@@ -122,22 +111,11 @@ public class CSRFHandlerImpl implements CSRFHandler {
     byte[] salt = new byte[32];
     random.nextBytes(salt);
 
-    String saltPlusToken = base64UrlEncode(salt) + "." + System.currentTimeMillis();
-    String signature = base64UrlEncode(mac.doFinal(saltPlusToken.getBytes(StandardCharsets.US_ASCII)));
+    String saltPlusToken = Utils.base64UrlEncode(salt) + "." + System.currentTimeMillis();
 
-    final String token = saltPlusToken + "." + signature;
-    // a new token was generated add it to the cookie
-    ctx.response()
-      .addCookie(
-        Cookie.cookie(cookieName, token)
-          .setPath(cookiePath)
-          .setHttpOnly(httpOnly)
-          .setSecure(cookieSecure)
-          // it's not an option to change the same site policy
-          .setSameSite(CookieSameSite.STRICT));
+    final String token = signature.sign(saltPlusToken);
 
     Session session = ctx.session();
-
     if (session != null) {
       // storing will include the session id too. The reason is that if a session is upgraded
       // we don't want to allow the token to be valid anymore
@@ -189,8 +167,97 @@ public class CSRFHandlerImpl implements CSRFHandler {
     }
   }
 
-  private boolean isValidRequest(RoutingContext ctx) {
+  @Override
+  public void handle(RoutingContext ctx) {
 
+    // we need to keep state since we can be called again on reroute
+    if (!((RoutingContextInternal) ctx).seenHandler(RoutingContextInternal.CSRF_HANDLER)) {
+      ((RoutingContextInternal) ctx).visitHandler(RoutingContextInternal.CSRF_HANDLER);
+    } else {
+      ctx.next();
+      return;
+    }
+
+    if (nagHttps && LOG.isTraceEnabled()) {
+      String uri = ctx.request().absoluteURI();
+      if (uri != null && !uri.startsWith("https:")) {
+        LOG.trace("Using session cookies without https could make you susceptible to session hijacking: " + uri);
+      }
+    }
+
+    // If we're being strict with the origin
+    // ensure that they are always valid
+    if (!Origin.check(origin, ctx)) {
+      ctx.fail(403, new VertxException("Invalid Origin", true));
+      return;
+    }
+
+    String methodName = ctx.request().method().name();
+    switch (methodName) {
+      case "HEAD":
+      case "GET":
+        handleSafeMethod(ctx);
+        break;
+      case "POST":
+      case "PUT":
+      case "DELETE":
+      case "PATCH":
+        handleUnsafeMethod(ctx);
+        break;
+      default:
+        // ignore other methods
+        ctx.next();
+        break;
+    }
+  }
+
+  private void handleSafeMethod(RoutingContext ctx) {
+    boolean sendCookie = true;
+    Session session = ctx.session();
+    String token;
+    if (session == null) {
+      // if there's no session to store values, tokens are issued on every request
+      token = generateAndStoreToken(ctx);
+    } else {
+      // Get the token from the session, this also considers the fact
+      // that the token might be invalid as it was issued for a previous session id.
+      // Session ids change on session upgrades (unauthenticated -> authenticated; role change; etc...)
+      String sessionToken = getTokenFromSession(ctx);
+      // When there's no token in the session, then we behave just like when there is no session.
+      // Create a new token, but we also store it in the session for the next runs.
+      if (sessionToken == null) {
+        token = generateAndStoreToken(ctx);
+      } else {
+        String[] parts = sessionToken.split("\\.");
+        final long ts = parseLong(parts[1]);
+
+        if (ts == -1) {
+          // fallback as the token is expired
+          token = generateAndStoreToken(ctx);
+        } else {
+          if (!(System.currentTimeMillis() > ts + timeout)) {
+            // We're still on the same session, and the token hasn't expired so it can be reused.
+            token = sessionToken;
+            // If a previous unsafe interaction succeeded, but the response didn't get to the client
+            // (e.g. the response headers were sent but not the response body), the session token may be different.
+            // In this case, we send it again to synchronize with the client.
+            // Otherwise, it's not necessary to send it again.
+            Cookie cookie = ctx.request().getCookie(cookieName);
+            if (cookie != null && token.equals(cookie.getValue())) {
+              sendCookie = false;
+            }
+          } else {
+            // Fallback as the token is expired
+            token = generateAndStoreToken(ctx);
+          }
+        }
+      }
+    }
+    synchronizeWithClient(ctx, token, sendCookie);
+    ctx.next();
+  }
+
+  private void handleUnsafeMethod(RoutingContext ctx) {
     /* Verifying CSRF token using "Double Submit Cookie" approach */
     final Cookie cookie = ctx.request().getCookie(cookieName);
 
@@ -200,22 +267,22 @@ public class CSRFHandlerImpl implements CSRFHandler {
       if (ctx.body().available()) {
         header = ctx.request().getFormAttribute(headerName);
       } else {
-        ctx.fail(new IllegalStateException("BodyHandler is required to process POST requests"));
-        return false;
+        ctx.fail(new VertxException("BodyHandler is required to process unsafe methods", true));
+        return;
       }
     }
 
     // both the header and the cookie must be present, not null and not empty
     if (header == null || cookie == null || isBlank(header)) {
       ctx.fail(403, new IllegalArgumentException("Token provided via HTTP Header/Form is absent/empty"));
-      return false;
+      return;
     }
 
     final String cookieValue = cookie.getValue();
 
     if (cookieValue == null || isBlank(cookieValue)) {
       ctx.fail(403, new IllegalArgumentException("Token provided via HTTP Header/Form is absent/empty"));
-      return false;
+      return;
     }
 
     final byte[] headerBytes = header.getBytes(StandardCharsets.UTF_8);
@@ -224,7 +291,7 @@ public class CSRFHandlerImpl implements CSRFHandler {
     //Verify that token from header and one from cookie are the same
     if (!MessageDigest.isEqual(headerBytes, cookieBytes)) {
       ctx.fail(403, new IllegalArgumentException("Token provided via HTTP Header and via Cookie are not equal"));
-      return false;
+      return;
     }
 
     final Session session = ctx.session();
@@ -240,136 +307,73 @@ public class CSRFHandlerImpl implements CSRFHandler {
           // the challenge must match the user-agent input
           if (!MessageDigest.isEqual(challenge.getBytes(StandardCharsets.UTF_8), headerBytes)) {
             ctx.fail(403, new IllegalArgumentException("Token has been used or is outdated"));
-            return false;
+            return;
           }
         } else {
           ctx.fail(403, new IllegalArgumentException("Token has been issued for a different session"));
-          return false;
+          return;
         }
       } else {
         ctx.fail(403, new IllegalArgumentException("No Token has been added to the session"));
-        return false;
+        return;
       }
     }
 
+    if (!signature.verify(header)) {
+      ctx.fail(403, new IllegalArgumentException("Token signature does not match"));
+      return;
+    }
+
+    // if the token has expired remove the token from the session so that a new one can be acquired by a fresh GET
+    // provided the user is authenticated.
+    // We cannot simply remove it before these checks as this will invalidate the token even if the response is never
+    // written, requiring the user to GET another token even though the previous was valid
     String[] tokens = header.split("\\.");
     if (tokens.length != 3) {
+      if (session != null) {
+        session.remove(headerName);
+      }
       ctx.fail(403);
-      return false;
-    }
-
-    byte[] saltPlusToken = (tokens[0] + "." + tokens[1]).getBytes(StandardCharsets.US_ASCII);
-
-    synchronized (mac) {
-      saltPlusToken = mac.doFinal(saltPlusToken);
-    }
-
-    final byte[] signature = base64UrlEncode(saltPlusToken).getBytes(StandardCharsets.US_ASCII);
-
-    if (!MessageDigest.isEqual(signature, tokens[2].getBytes(StandardCharsets.US_ASCII))) {
-      ctx.fail(403, new IllegalArgumentException("Token signature does not match"));
-      return false;
-    }
-
-    // this token has been used and we discard it to avoid replay attacks
-    if (session != null) {
-      session.remove(headerName);
+      return;
     }
 
     final long ts = parseLong(tokens[1]);
 
     if (ts == -1) {
+      if (session != null) {
+        session.remove(headerName);
+      }
       ctx.fail(403);
-      return false;
+      return;
     }
 
     // validate validity
     if (System.currentTimeMillis() > ts + timeout) {
-      ctx.fail(403, new IllegalArgumentException("CSRF validity expired"));
-      return false;
-    }
-
-    return true;
-  }
-
-  @Override
-  public void handle(RoutingContext ctx) {
-
-    if (nagHttps) {
-      String uri = ctx.request().absoluteURI();
-      if (uri != null && !uri.startsWith("https:")) {
-        LOG.trace("Using session cookies without https could make you susceptible to session hijacking: " + uri);
+      if (session != null) {
+        session.remove(headerName);
       }
-    }
-
-    HttpMethod method = ctx.request().method();
-    Session session = ctx.session();
-
-    // if we're being strict with the origin
-    // ensure that they are always valid
-    if (!Origin.check(origin, ctx)) {
-      ctx.fail(403, new IllegalStateException("Invalid Origin"));
+      ctx.fail(403, new IllegalArgumentException("CSRF validity expired"));
       return;
     }
 
-    switch (method.name()) {
-      case "GET":
-        final String token;
+    // The token matches, so refresh it to avoid replay attacks
+    String token = generateAndStoreToken(ctx);
+    synchronizeWithClient(ctx, token, true);
+    ctx.next();
+  }
 
-        if (session == null) {
-          // if there's no session to store values, tokens are issued on every request
-          token = generateAndStoreToken(ctx);
-        } else {
-          // get the token from the session, this also considers the fact
-          // that the token might be invalid as it was issued for a previous session id
-          // session id's change on session upgrades (unauthenticated -> authenticated; role change; etc...)
-          String sessionToken = getTokenFromSession(ctx);
-          // when there's no token in the session, then we behave just like when there is no session
-          // create a new token, but we also store it in the session for the next runs
-          if (sessionToken == null) {
-            token = generateAndStoreToken(ctx);
-          } else {
-            String[] parts = sessionToken.split("\\.");
-            final long ts = parseLong(parts[1]);
-
-            if (ts == -1) {
-              // fallback as the token is expired
-              token = generateAndStoreToken(ctx);
-            } else {
-              if (!(System.currentTimeMillis() > ts + timeout)) {
-                // we're still on the same session, no need to regenerate the token
-                // also note that the token isn't expired, so it can be reused
-                token = sessionToken;
-                // in this case specifically we don't issue the token as it is unchanged
-                // the user agent still has it from the previous interaction.
-              } else {
-                // fallback as the token is expired
-                token = generateAndStoreToken(ctx);
-              }
-            }
-          }
-        }
-        // put the token in the context for users who prefer to render the token directly on the HTML
-        ctx.put(headerName, token);
-        ctx.next();
-        break;
-      case "POST":
-      case "PUT":
-      case "DELETE":
-      case "PATCH":
-        if (isValidRequest(ctx)) {
-          // it matches, so refresh the token to avoid replay attacks
-          token = generateAndStoreToken(ctx);
-          // put the token in the context for users who prefer to
-          // render the token directly on the HTML
-          ctx.put(headerName, token);
-          ctx.next();
-        }
-        break;
-      default:
-        // ignore other methods
-        ctx.next();
-        break;
+  private void synchronizeWithClient(RoutingContext ctx, String token, boolean cookie) {
+    if (cookie) {
+      ctx.response()
+        .addCookie(
+          Cookie.cookie(cookieName, token)
+            .setPath(cookiePath)
+            .setHttpOnly(httpOnly)
+            .setSecure(cookieSecure)
+            // it's not an option to change the same site policy
+            .setSameSite(CookieSameSite.STRICT));
     }
+    // Put the token in the context for users who prefer to render the token directly on the HTML
+    ctx.put(headerName, token);
   }
 }

@@ -17,8 +17,9 @@
 package io.vertx.ext.web.it;
 
 import io.vertx.core.http.HttpMethod;
-import io.vertx.ext.web.WebTestBase;
-import org.junit.Test;
+import io.vertx.ext.web.tests.WebTestBase;
+import static org.junit.jupiter.api.Assertions.*;
+import org.junit.jupiter.api.Test;
 
 /**
  * @author <a href="http://tfox.org">Tim Fox</a>

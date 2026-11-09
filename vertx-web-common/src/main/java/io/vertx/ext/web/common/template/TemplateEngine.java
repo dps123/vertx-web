@@ -18,10 +18,7 @@ package io.vertx.ext.web.common.template;
 
 import io.vertx.codegen.annotations.GenIgnore;
 import io.vertx.codegen.annotations.VertxGen;
-import io.vertx.core.AsyncResult;
 import io.vertx.core.Future;
-import io.vertx.core.Handler;
-import io.vertx.core.Promise;
 import io.vertx.core.buffer.Buffer;
 import io.vertx.core.json.JsonObject;
 
@@ -46,21 +43,10 @@ public interface TemplateEngine {
    *
    * @param context  the routing context
    * @param templateFileName  the template file name to use
-   * @param handler  the handler that will be called with a result containing the buffer or a failure.
-   */
-  default void render(JsonObject context, String templateFileName, Handler<AsyncResult<Buffer>> handler) {
-    render(context.getMap(), templateFileName, handler);
-  }
-
-  /**
-   * @see TemplateEngine#render(JsonObject, String, Handler)
-   * @param context  the routing context
-   * @param templateFileName  the template file name to use
+   * @return a future notified with a result containing the buffer or a failure
    */
   default Future<Buffer> render(JsonObject context, String templateFileName) {
-    Promise<Buffer> promise = Promise.promise();
-    render(context, templateFileName, promise);
-    return promise.future();
+    return render(context.getMap(), templateFileName);
   }
 
   /**
@@ -72,31 +58,18 @@ public interface TemplateEngine {
    *
    * @param context  the routing context
    * @param templateFileName  the template file name to use
-   * @param handler  the handler that will be called with a result containing the buffer or a failure.
+   * @return a future notified with a result containing the buffer or a failure
    */
   @GenIgnore(GenIgnore.PERMITTED_TYPE)
-  void render(Map<String, Object> context, String templateFileName, Handler<AsyncResult<Buffer>> handler);
+  Future<Buffer> render(Map<String, Object> context, String templateFileName);
 
   /**
-   * @see TemplateEngine#render(Map, String, Handler)
-   * @param context  the routing context
-   * @param templateFileName  the template file name to use
-   */
-  @GenIgnore(GenIgnore.PERMITTED_TYPE)
-  default Future<Buffer> render(Map<String, Object> context, String templateFileName) {
-    Promise<Buffer> promise = Promise.promise();
-    render(context, templateFileName, promise);
-    return promise.future();
-  }
-
-  /**
-   * Returns the underlying engine, so further configurations or customizations may be applied.
-   * @param <T> the engine object type.
+   * Returns the underlying engine, so further configurations or customizations may be applied or {@code null} when the
+   * engine cannot unwrap it.
    * @return the engine instance.
-   * @throws ClassCastException when the expected type does not match the internal type.
    */
   @GenIgnore(GenIgnore.PERMITTED_TYPE)
-  default <T> T unwrap() throws ClassCastException {
+  default Object unwrap() {
     return null;
   }
 

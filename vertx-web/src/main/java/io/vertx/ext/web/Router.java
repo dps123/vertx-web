@@ -247,6 +247,31 @@ public interface Router extends Handler<HttpServerRequest> {
   Route postWithRegex(String regex);
 
   /**
+   * Add a route that matches any HTTP QUERY request
+   *
+   * @return the route
+   */
+  Route query();
+
+  /**
+   * Add a route that matches a HTTP QUERY request and the specified path
+   *
+   * @param path  URI paths that begin with this path will match
+   *
+   * @return the route
+   */
+  Route query(String path);
+
+  /**
+   * Add a route that matches a HTTP QUERY request and the specified path regex
+   *
+   * @param regex  URI paths that begin with a match for this regex will match
+   *
+   * @return the route
+   */
+  Route queryWithRegex(String regex);
+
+  /**
    * Add a route that matches any HTTP DELETE request
    *
    * @return the route
@@ -360,18 +385,6 @@ public interface Router extends Handler<HttpServerRequest> {
   Router clear();
 
   /**
-   * @deprecated This method duplicates the sub router functionality from {@link Route#subRouter(Router)}.
-   *
-   * Mount a sub router on this router
-   *
-   * @param mountPoint  the mount point (path prefix) to mount it on
-   * @param subRouter  the router to mount as a sub router
-   * @return a reference to this, so the API can be used fluently
-   */
-  @Deprecated
-  Route mountSubRouter(String mountPoint, Router subRouter);
-
-  /**
    * Specify an handler to handle an error for a particular status code. You can use to manage general errors too using status code 500.
    * The handler will be called when the context fails and other failure handlers didn't write the reply or when an exception is thrown inside an handler.
    * You <b>must not</b> use {@link RoutingContext#next()} inside the error handler
@@ -383,6 +396,18 @@ public interface Router extends Handler<HttpServerRequest> {
    */
   @Fluent
   Router errorHandler(int statusCode, Handler<RoutingContext> errorHandler);
+
+  /**
+   * Specify an handler to handle an error for any status code that doesn't have a specific handler assigned.
+   * The handler will be called when the context fails and other failure handlers didn't write the reply or when an exception is thrown inside an handler.
+   * You <b>must not</b> use {@link RoutingContext#next()} inside the error handler
+   * This does not affect the normal failure routing logic.
+   *
+   * @param errorHandler error handler. Note: You <b>must not</b> use {@link RoutingContext#next()} inside the provided handler
+   * @return a reference to this, so the API can be used fluently
+   */
+  @Fluent
+  Router uncaughtErrorHandler(Handler<RoutingContext> errorHandler);
 
   /**
    * Used to route a context to the router. Used for sub-routers. You wouldn't normally call this method directly.

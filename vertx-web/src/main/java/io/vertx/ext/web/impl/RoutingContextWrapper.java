@@ -22,11 +22,9 @@ import io.vertx.core.Handler;
 import io.vertx.core.MultiMap;
 import io.vertx.core.Vertx;
 import io.vertx.core.buffer.Buffer;
-import io.vertx.core.http.Cookie;
 import io.vertx.core.http.HttpMethod;
 import io.vertx.core.http.HttpServerRequest;
 import io.vertx.core.http.HttpServerResponse;
-import io.vertx.ext.auth.User;
 import io.vertx.ext.web.*;
 
 import java.nio.charset.Charset;
@@ -165,7 +163,6 @@ public class RoutingContextWrapper extends RoutingContextImplBase {
   }
 
   @Override
-  @Deprecated
   public void setSession(Session session) {
     inner.setSession(session);
   }
@@ -181,26 +178,18 @@ public class RoutingContextWrapper extends RoutingContextImplBase {
   }
 
   @Override
-  public void setUser(User user) {
-    inner.setUser(user);
-  }
-
-  @Override
-  public void clearUser() {
-    inner.clearUser();
-  }
-
-  @Override
-  public User user() {
-    return inner.user();
+  public UserContext userContext() {
+    return inner.userContext();
   }
 
   @Override
   public void next() {
     if (!super.iterateNext()) {
       // We didn't route request to anything so go to parent,
-      // but also propagate the current status
+      // but also propagate the current status and accumulated allowed methods/content types
       inner.setMatchFailure(matchFailure);
+      inner.addAllowedMethods(allowedMethods);
+      inner.addAllowedContentTypes(allowedContentTypes);
       inner.next();
     }
   }
@@ -236,44 +225,11 @@ public class RoutingContextWrapper extends RoutingContextImplBase {
   }
 
   @Override
-  @Deprecated
-  public Cookie getCookie(String name) {
-    return inner.getCookie(name);
-  }
-
-  @Override
-  @Deprecated
-  public RoutingContext addCookie(Cookie cookie) {
-    inner.addCookie(cookie);
-    return this;
-  }
-
-  @Override
-  @Deprecated
-  public Cookie removeCookie(String name, boolean invalidate) {
-    return inner.removeCookie(name, invalidate);
-  }
-
-  @Override
-  @Deprecated
-  public int cookieCount() {
-    return inner.cookieCount();
-  }
-
-  @Override
-  @Deprecated
-  public Map<String, io.vertx.core.http.Cookie> cookieMap() {
-    return inner.cookieMap();
-  }
-
-  @Override
-  @Deprecated
   public RequestBody body() {
     return inner.body();
   }
 
   @Override
-  @Deprecated
   public void setBody(Buffer body) {
     inner.setBody(body);
   }
@@ -281,6 +237,11 @@ public class RoutingContextWrapper extends RoutingContextImplBase {
   @Override
   public List<FileUpload> fileUploads() {
     return inner.fileUploads();
+  }
+
+  @Override
+  public void cancelAndCleanupFileUploads() {
+    inner.cancelAndCleanupFileUploads();
   }
 
   @Override

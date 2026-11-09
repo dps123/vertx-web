@@ -6,9 +6,10 @@
   <parent>
     <groupId>io.vertx</groupId>
     <artifactId>vertx-template-engines</artifactId>
-    <version>4.3.5-SNAPSHOT</version>
+    <version>5.3.0-SNAPSHOT</version>
   </parent>
 
+  <name>vertx-web-templ-rocker</name>
   <artifactId>vertx-web-templ-rocker</artifactId>
 
   <properties>
@@ -32,23 +33,11 @@
     <dependency>
       <groupId>org.slf4j</groupId>
       <artifactId>slf4j-api</artifactId>
-      <version>1.7.21</version>
     </dependency>
     <dependency>
       <groupId>io.vertx</groupId>
       <artifactId>vertx-web-common</artifactId>
       <version>${project.version}</version>
-    </dependency>
-    <dependency>
-      <groupId>io.vertx</groupId>
-      <artifactId>vertx-unit</artifactId>
-      <scope>test</scope>
-    </dependency>
-    <dependency>
-      <groupId>com.fizzed</groupId>
-      <artifactId>rocker-compiler</artifactId>
-      <version>${rocker.version}</version>
-      <scope>test</scope>
     </dependency>
   </dependencies>
 

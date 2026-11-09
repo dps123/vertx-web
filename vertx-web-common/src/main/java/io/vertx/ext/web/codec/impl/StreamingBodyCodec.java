@@ -15,10 +15,7 @@
  */
 package io.vertx.ext.web.codec.impl;
 
-import io.vertx.core.AsyncResult;
-import io.vertx.core.Future;
-import io.vertx.core.Handler;
-import io.vertx.core.Promise;
+import io.vertx.core.*;
 import io.vertx.core.buffer.Buffer;
 import io.vertx.core.streams.WriteStream;
 import io.vertx.ext.web.codec.BodyCodec;
@@ -51,13 +48,16 @@ public class StreamingBodyCodec implements BodyCodec<Void> {
   }
 
   @Override
-  public void create(Handler<AsyncResult<BodyStream<Void>>> handler) {
-    AsyncResult<BodyStream<Void>> result;
+  public BodyStream<Void> stream() throws Exception {
     synchronized (this) {
       if (error != null) {
-        result = Future.failedFuture(error);
+        if (error instanceof Exception) {
+          throw ((Exception) error);
+        } else {
+          throw new VertxException(error);
+        }
       } else {
-        result = Future.succeededFuture(new BodyStream<Void>() {
+        return new BodyStream<>() {
 
           final Promise<Void> promise = Promise.promise();
 
@@ -78,35 +78,25 @@ public class StreamingBodyCodec implements BodyCodec<Void> {
           }
 
           @Override
-          public void write(Buffer data, Handler<AsyncResult<Void>> handler) {
-            stream.write(data, handler);
-          }
-
-          @Override
           public Future<Void> write(Buffer data) {
-            Promise<Void> promise = Promise.promise();
-            write(data, promise);
-            return promise.future();
+            return stream.write(data);
           }
 
           @Override
-          public void end(Handler<AsyncResult<Void>> handler) {
+          public Future<Void> end() {
             if (close) {
-              stream.end(ar -> {
-                if (ar.succeeded()) {
-                  promise.tryComplete();
-                } else {
-                  promise.tryFail(ar.cause());
-                }
-                if (handler != null) {
-                  handler.handle(ar);
-                }
-              });
+              return stream
+                .end()
+                .onComplete(ar -> {
+                  if (ar.succeeded()) {
+                    promise.tryComplete();
+                  } else {
+                    promise.tryFail(ar.cause());
+                  }
+                });
             } else {
               promise.tryComplete();
-              if (handler != null) {
-                handler.handle(Future.succeededFuture());
-              }
+              return Future.succeededFuture();
             }
           }
 
@@ -126,9 +116,8 @@ public class StreamingBodyCodec implements BodyCodec<Void> {
             stream.drainHandler(handler);
             return this;
           }
-        });
+        };
       }
     }
-    handler.handle(result);
   }
 }

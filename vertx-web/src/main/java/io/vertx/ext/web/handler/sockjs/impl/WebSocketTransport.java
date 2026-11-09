@@ -32,15 +32,15 @@
 
 package io.vertx.ext.web.handler.sockjs.impl;
 
-import io.vertx.core.AsyncResult;
 import io.vertx.core.Future;
 import io.vertx.core.Handler;
 import io.vertx.core.Vertx;
+import io.vertx.core.VertxException;
 import io.vertx.core.http.HttpServerRequest;
 import io.vertx.core.http.ServerWebSocket;
-import io.vertx.core.impl.logging.Logger;
-import io.vertx.core.impl.logging.LoggerFactory;
-import io.vertx.core.net.impl.ConnectionBase;
+import io.vertx.core.internal.logging.Logger;
+import io.vertx.core.internal.logging.LoggerFactory;
+import io.vertx.core.internal.net.NetSocketInternal;
 import io.vertx.core.shareddata.LocalMap;
 import io.vertx.ext.web.Router;
 import io.vertx.ext.web.RoutingContext;
@@ -50,8 +50,7 @@ import io.vertx.ext.web.handler.sockjs.SockJSHandlerOptions;
 import io.vertx.ext.web.handler.sockjs.SockJSSocket;
 import io.vertx.ext.web.impl.Origin;
 
-import static io.vertx.core.http.HttpHeaders.*;
-import static io.vertx.ext.web.impl.Utils.canUpgradeToWebsocket;
+import static io.vertx.core.http.HttpHeaders.ALLOW;
 
 /**
  * @author <a href="http://tfox.org">Tim Fox</a>
@@ -81,14 +80,14 @@ class WebSocketTransport extends BaseTransport {
 
   private void handleGet(RoutingContext ctx) {
     HttpServerRequest req = ctx.request();
-    if (!canUpgradeToWebsocket(req)) {
+    if (!req.canUpgradeToWebSocket()) {
       ctx.response().setStatusCode(400);
       ctx.response().end("Can \"Upgrade\" only to \"WebSocket\".");
       return;
     }
 
     if (!Origin.check(origin, ctx)) {
-      ctx.fail(403, new IllegalStateException("Invalid Origin"));
+      ctx.fail(403, new VertxException("Invalid Origin", true));
       return;
     }
 
@@ -139,14 +138,12 @@ class WebSocketTransport extends BaseTransport {
     }
 
     @Override
-    public void sendFrame(String body, Handler<AsyncResult<Void>> handler) {
+    public Future<Void> sendFrame(String body) {
       if (LOG.isTraceEnabled()) LOG.trace("WS, sending frame");
       if (!closed) {
-        ws.writeTextMessage(body, handler);
+        return ws.writeTextMessage(body);
       } else {
-        if (handler != null) {
-          handler.handle(Future.failedFuture(ConnectionBase.CLOSED_EXCEPTION));
-        }
+        return Future.failedFuture(NetSocketInternal.CLOSED_EXCEPTION);
       }
     }
 

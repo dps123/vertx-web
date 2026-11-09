@@ -18,9 +18,7 @@ package io.vertx.ext.web.handler;
 
 import io.vertx.codegen.annotations.Fluent;
 import io.vertx.codegen.annotations.VertxGen;
-import io.vertx.core.AsyncResult;
 import io.vertx.core.Future;
-import io.vertx.core.Handler;
 import io.vertx.core.http.CookieSameSite;
 import io.vertx.ext.auth.User;
 import io.vertx.ext.web.RoutingContext;
@@ -202,15 +200,10 @@ public interface SessionHandler extends PlatformHandler {
    * a failure at the store level. Once a session is flushed no automatic save will be performed at end of request.
    *
    * @param ctx the current context
-   * @param handler the event handler to signal a asynchronous response.
-   * @return fluent self
+   * @return a future signaled with the asynchronous response.
    */
-	@Fluent
-  default SessionHandler flush(RoutingContext ctx, Handler<AsyncResult<Void>> handler) {
-    flush(ctx, false)
-      .onComplete(handler);
-
-    return this;
+  default Future<Void> flush(RoutingContext ctx) {
+    return flush(ctx, false);
   }
 
   /**
@@ -219,26 +212,7 @@ public interface SessionHandler extends PlatformHandler {
    *
    * @param ctx the current context
    * @param ignoreStatus flush regardless of response status code
-   * @param handler the event handler to signal a asynchronous response.
-   * @return fluent self
-   */
-  @Fluent
-  default SessionHandler flush(RoutingContext ctx, boolean ignoreStatus, Handler<AsyncResult<Void>> handler) {
-    flush(ctx, ignoreStatus)
-      .onComplete(handler);
-
-    return this;
-  }
-
-  /**
-   * Promisified flush. See {@link #flush(RoutingContext, Handler)}.
-   */
-	default Future<Void> flush(RoutingContext ctx) {
-    return flush(ctx, false);
-  }
-
-  /**
-   * Promisified flush. See {@link #flush(RoutingContext, boolean, Handler)}.
+   * @return a future signaled with the asynchronous response.
    */
   Future<Void> flush(RoutingContext ctx, boolean ignoreStatus);
 
@@ -271,16 +245,13 @@ public interface SessionHandler extends PlatformHandler {
   Future<Void> setUser(RoutingContext context, User user);
 
   /**
-   * Set the user for the session
+   * Set signing secret for the session cookie. The cookie will not be signed and
+   * verified by the SessionHandler if this is not set. But may be signed by the
+   * session implementation, for example, CookieSessionStore signs the cookie data.
    *
-   * @param context the routing context
-   * @param user the user
-   * @param handler the event handler to signal a asynchronous response.
+   * @param secret the secret used to sign the session cookie data
    * @return a reference to this, so the API can be used fluently
    */
   @Fluent
-  default SessionHandler setUser(RoutingContext context, User user, Handler<AsyncResult<Void>> handler) {
-    setUser(context, user).onComplete(handler);
-    return this;
-  }
+  SessionHandler setSigningSecret(String secret);
 }

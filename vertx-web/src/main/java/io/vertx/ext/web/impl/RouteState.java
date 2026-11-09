@@ -1,5 +1,5 @@
 /*
- * Copyright 2019 Red Hat, Inc.
+ * Copyright 2025 Red Hat, Inc.
  *
  *  All rights reserved. This program and the accompanying materials
  *  are made available under the terms of the Eclipse Public License v1.0
@@ -18,10 +18,14 @@ package io.vertx.ext.web.impl;
 import io.vertx.core.Handler;
 import io.vertx.core.http.HttpMethod;
 import io.vertx.core.http.HttpServerRequest;
-import io.vertx.core.impl.logging.Logger;
-import io.vertx.core.impl.logging.LoggerFactory;
-import io.vertx.core.net.impl.URIDecoder;
+import io.vertx.core.internal.ContextInternal;
+import io.vertx.core.internal.http.HttpServerRequestInternal;
+import io.vertx.core.internal.logging.Logger;
+import io.vertx.core.internal.logging.LoggerFactory;
+import io.vertx.core.internal.net.RFC3986;
+import io.vertx.core.net.HostAndPort;
 import io.vertx.ext.web.MIMEHeader;
+import io.vertx.ext.web.Router;
 import io.vertx.ext.web.RoutingContext;
 import io.vertx.ext.web.handler.*;
 
@@ -36,7 +40,7 @@ import java.util.regex.Pattern;
  *
  * @author <a href="http://pmlopes@gmail.com">Paulo Lopes</a>
  */
-final class RouteState {
+public final class RouteState {
 
   private static final Logger LOG = LoggerFactory.getLogger(RouteState.class);
 
@@ -44,7 +48,6 @@ final class RouteState {
   enum Priority {
     PLATFORM,
     SECURITY_POLICY,
-    PROTOCOL_UPGRADE,
     BODY,
     MULTI_TENANT,
     AUTHENTICATION,
@@ -59,9 +62,6 @@ final class RouteState {
     }
     if (handler instanceof SecurityPolicyHandler) {
       return Priority.SECURITY_POLICY;
-    }
-    if (handler instanceof ProtocolUpgradeHandler) {
-      return Priority.PROTOCOL_UPGRADE;
     }
     if (handler instanceof BodyHandler) {
       return Priority.BODY;
@@ -104,8 +104,9 @@ final class RouteState {
   private final boolean pathEndsWithSlash;
   private final boolean exclusive;
   private final boolean exactPath;
+  private final Router subRouter;
 
-  private RouteState(RouteImpl route, Map<String, Object> metadata, String path, String name, int order, boolean enabled, Set<HttpMethod> methods, Set<MIMEHeader> consumes, boolean emptyBodyPermittedWithConsumes, Set<MIMEHeader> produces, List<Handler<RoutingContext>> contextHandlers, List<Handler<RoutingContext>> failureHandlers, boolean added, Pattern pattern, List<String> groups, boolean useNormalizedPath, Set<String> namedGroupsInRegex, Pattern virtualHostPattern, boolean pathEndsWithSlash, boolean exclusive, boolean exactPath) {
+  private RouteState(RouteImpl route, Map<String, Object> metadata, String path, String name, int order, boolean enabled, Set<HttpMethod> methods, Set<MIMEHeader> consumes, boolean emptyBodyPermittedWithConsumes, Set<MIMEHeader> produces, List<Handler<RoutingContext>> contextHandlers, List<Handler<RoutingContext>> failureHandlers, boolean added, Pattern pattern, List<String> groups, boolean useNormalizedPath, Set<String> namedGroupsInRegex, Pattern virtualHostPattern, boolean pathEndsWithSlash, boolean exclusive, boolean exactPath, Router subRouter) {
     this.route = route;
     this.metadata = metadata;
     this.path = path;
@@ -127,6 +128,7 @@ final class RouteState {
     this.pathEndsWithSlash = pathEndsWithSlash;
     this.exclusive = exclusive;
     this.exactPath = exactPath;
+    this.subRouter = subRouter;
   }
 
   RouteState(RouteImpl route, int order) {
@@ -151,7 +153,8 @@ final class RouteState {
       null,
       false,
       false,
-      true);
+      true,
+      null);
   }
 
   public RouteImpl getRoute() {
@@ -191,7 +194,8 @@ final class RouteState {
       this.virtualHostPattern,
       this.pathEndsWithSlash,
       this.exclusive,
-      this.exactPath);
+      this.exactPath,
+      this.subRouter);
   }
 
   public Map<String, Object> getMetadata() {
@@ -224,7 +228,8 @@ final class RouteState {
       this.virtualHostPattern,
       this.pathEndsWithSlash,
       this.exclusive,
-      this.exactPath);
+      this.exactPath,
+      this.subRouter);
   }
 
   public int getOrder() {
@@ -253,7 +258,8 @@ final class RouteState {
       this.virtualHostPattern,
       this.pathEndsWithSlash,
       this.exclusive,
-      this.exactPath);
+      this.exactPath,
+      this.subRouter);
   }
 
   public boolean isEnabled() {
@@ -282,7 +288,8 @@ final class RouteState {
       this.virtualHostPattern,
       this.pathEndsWithSlash,
       this.exclusive,
-      this.exactPath);
+      this.exactPath,
+      this.subRouter);
   }
 
   public Set<HttpMethod> getMethods() {
@@ -311,7 +318,8 @@ final class RouteState {
       this.virtualHostPattern,
       this.pathEndsWithSlash,
       this.exclusive,
-      this.exactPath);
+      this.exactPath,
+      this.subRouter);
   }
 
   public RouteState addMethod(HttpMethod method) {
@@ -336,7 +344,8 @@ final class RouteState {
       this.virtualHostPattern,
       this.pathEndsWithSlash,
       this.exclusive,
-      this.exactPath);
+      this.exactPath,
+      this.subRouter);
 
     newState.methods.add(method);
     return newState;
@@ -368,7 +377,8 @@ final class RouteState {
       this.virtualHostPattern,
       this.pathEndsWithSlash,
       this.exclusive,
-      this.exactPath);
+      this.exactPath,
+      this.subRouter);
   }
 
   RouteState addConsume(MIMEHeader mime) {
@@ -393,7 +403,8 @@ final class RouteState {
       this.virtualHostPattern,
       this.pathEndsWithSlash,
       this.exclusive,
-      this.exactPath);
+      this.exactPath,
+      this.subRouter);
 
     newState.consumes.add(mime);
     return newState;
@@ -425,7 +436,8 @@ final class RouteState {
       this.virtualHostPattern,
       this.pathEndsWithSlash,
       this.exclusive,
-      this.exactPath);
+      this.exactPath,
+      this.subRouter);
   }
 
   public Set<MIMEHeader> getProduces() {
@@ -454,7 +466,8 @@ final class RouteState {
       this.virtualHostPattern,
       this.pathEndsWithSlash,
       this.exclusive,
-      this.exactPath);
+      this.exactPath,
+      this.subRouter);
   }
 
   RouteState addProduce(MIMEHeader mime) {
@@ -479,7 +492,8 @@ final class RouteState {
       this.virtualHostPattern,
       this.pathEndsWithSlash,
       this.exclusive,
-      this.exactPath);
+      this.exactPath,
+      this.subRouter);
 
     newState.produces.add(mime);
     return newState;
@@ -515,7 +529,8 @@ final class RouteState {
       this.virtualHostPattern,
       this.pathEndsWithSlash,
       this.exclusive,
-      this.exactPath);
+      this.exactPath,
+      this.subRouter);
   }
 
   RouteState addContextHandler(Handler<RoutingContext> contextHandler) {
@@ -540,34 +555,41 @@ final class RouteState {
       this.virtualHostPattern,
       this.pathEndsWithSlash,
       this.exclusive,
-      this.exactPath);
+      this.exactPath,
+      this.subRouter);
 
     int len = newState.contextHandlers.size();
     final Priority weight = weight(contextHandler);
-    final Priority lastWeight;
     if (len > 0) {
-      lastWeight = weight(newState.contextHandlers.get(len - 1));
+      Handler<RoutingContext> lastHandler = newState.contextHandlers.get(len - 1);
+      final Priority lastWeight = weight(lastHandler);
       if (lastWeight.ordinal() > weight.ordinal()) {
-        String message = "Cannot add [" + weight.name() + "] handler to route with [" + lastWeight.name() + "] handler at index " + (len - 1);
-        // when lenient mode is disabled, throw IllegalStateException to signal that the setup is incorrect
-        if (!Boolean.getBoolean("io.vertx.web.router.setup.lenient")) {
-          throw new IllegalStateException(message);
-        }
-        LOG.warn(message);
+        failOrWarn("Cannot add [" + weight.name() + "] handler to route with [" + lastWeight.name() + "] handler at index " + (len - 1));
       }
-    } else {
-      lastWeight = null;
-    }
-
-    if (lastWeight == Priority.PROTOCOL_UPGRADE) {
-      // when lenient mode is disabled, don't log to signal that the setup might be incorrect
-      if (!Boolean.getBoolean("io.vertx.web.router.setup.lenient")) {
-        LOG.warn("Adding an handler after PROTOCOL_UPGRADE handler may not be reachable");
+      if (contextHandler instanceof ProtocolUpgradeHandler && newState.hasBodyHandler()) {
+        failOrWarn("Cannot add [PROTOCOL_UPGRADE] handler to route with [BODY] handler");
       }
     }
 
     newState.contextHandlers.add(contextHandler);
     return newState;
+  }
+
+  private static void failOrWarn(String message) {
+    // when lenient mode is disabled, throw IllegalStateException to signal that the setup is incorrect
+    if (!Boolean.getBoolean("io.vertx.web.router.setup.lenient")) {
+      throw new IllegalStateException(message);
+    }
+    LOG.warn(message);
+  }
+
+  private boolean hasBodyHandler() {
+    for (Handler<RoutingContext> contextHandler : contextHandlers) {
+      if (contextHandler instanceof BodyHandler) {
+        return true;
+      }
+    }
+    return false;
   }
 
   public List<Handler<RoutingContext>> getFailureHandlers() {
@@ -600,7 +622,8 @@ final class RouteState {
       this.virtualHostPattern,
       this.pathEndsWithSlash,
       this.exclusive,
-      this.exactPath);
+      this.exactPath,
+      this.subRouter);
   }
 
   RouteState addFailureHandler(Handler<RoutingContext> failureHandler) {
@@ -625,7 +648,8 @@ final class RouteState {
       this.virtualHostPattern,
       this.pathEndsWithSlash,
       this.exclusive,
-      this.exactPath);
+      this.exactPath,
+      this.subRouter);
 
     newState.failureHandlers.add(failureHandler);
     return newState;
@@ -657,7 +681,8 @@ final class RouteState {
       this.virtualHostPattern,
       this.pathEndsWithSlash,
       this.exclusive,
-      this.exactPath);
+      this.exactPath,
+      this.subRouter);
   }
 
   public Pattern getPattern() {
@@ -686,7 +711,8 @@ final class RouteState {
       this.virtualHostPattern,
       this.pathEndsWithSlash,
       this.exclusive,
-      this.exactPath);
+      this.exactPath,
+      this.subRouter);
   }
 
   public List<String> getGroups() {
@@ -715,7 +741,8 @@ final class RouteState {
       this.virtualHostPattern,
       this.pathEndsWithSlash,
       this.exclusive,
-      this.exactPath);
+      this.exactPath,
+      this.subRouter);
   }
 
   RouteState addGroup(String group) {
@@ -740,7 +767,8 @@ final class RouteState {
       this.virtualHostPattern,
       this.pathEndsWithSlash,
       this.exclusive,
-      this.exactPath);
+      this.exactPath,
+      this.subRouter);
 
     newState.groups.add(group);
     return newState;
@@ -772,7 +800,8 @@ final class RouteState {
       this.virtualHostPattern,
       this.pathEndsWithSlash,
       this.exclusive,
-      this.exactPath);
+      this.exactPath,
+      this.subRouter);
   }
 
   public Set<String> getNamedGroupsInRegex() {
@@ -801,7 +830,8 @@ final class RouteState {
       this.virtualHostPattern,
       this.pathEndsWithSlash,
       this.exclusive,
-      this.exactPath);
+      this.exactPath,
+      this.subRouter);
   }
 
   RouteState addNamedGroupInRegex(String namedGroupInRegex) {
@@ -826,7 +856,8 @@ final class RouteState {
       this.virtualHostPattern,
       this.pathEndsWithSlash,
       this.exclusive,
-      this.exactPath);
+      this.exactPath,
+      this.subRouter);
 
     newState.namedGroupsInRegex.add(namedGroupInRegex);
     return newState;
@@ -858,7 +889,8 @@ final class RouteState {
       virtualHostPattern,
       this.pathEndsWithSlash,
       this.exclusive,
-      this.exactPath);
+      this.exactPath,
+      this.subRouter);
   }
 
   public boolean isPathEndsWithSlash() {
@@ -887,11 +919,42 @@ final class RouteState {
       this.virtualHostPattern,
       pathEndsWithSlash,
       this.exclusive,
-      this.exactPath);
+      this.exactPath,
+      this.subRouter);
   }
 
   public boolean isExclusive() {
     return exclusive;
+  }
+
+  public Router getSubRouter() {
+    return subRouter;
+  }
+
+  RouteState setSubRouter(Router subRouter) {
+    return new RouteState(
+      this.route,
+      this.metadata,
+      this.path,
+      this.name,
+      this.order,
+      this.enabled,
+      this.methods,
+      this.consumes,
+      this.emptyBodyPermittedWithConsumes,
+      this.produces,
+      this.contextHandlers,
+      this.failureHandlers,
+      this.added,
+      this.pattern,
+      this.groups,
+      this.useNormalizedPath,
+      this.namedGroupsInRegex,
+      this.virtualHostPattern,
+      this.pathEndsWithSlash,
+      this.exclusive,
+      this.exactPath,
+      subRouter);
   }
 
   RouteState setExclusive(boolean exclusive) {
@@ -916,7 +979,8 @@ final class RouteState {
       this.virtualHostPattern,
       this.pathEndsWithSlash,
       exclusive,
-      this.exactPath);
+      this.exactPath,
+      this.subRouter);
   }
 
   public boolean isExactPath() {
@@ -945,7 +1009,8 @@ final class RouteState {
       this.virtualHostPattern,
       this.pathEndsWithSlash,
       this.exclusive,
-      exactPath);
+      exactPath,
+      this.subRouter);
   }
   RouteState setName(String name) {
     return new RouteState(
@@ -969,7 +1034,8 @@ final class RouteState {
       this.virtualHostPattern,
       this.pathEndsWithSlash,
       this.exclusive,
-      this.exactPath);
+      this.exactPath,
+      this.subRouter);
   }
 
   private boolean containsMethod(HttpServerRequest request) {
@@ -1095,11 +1161,7 @@ final class RouteState {
       MIMEHeader contentType = context.parsedHeaders().contentType();
       MIMEHeader consumal = contentType.findMatchedBy(consumes);
       if (consumal == null && !(contentType.rawValue().isEmpty() && emptyBodyPermittedWithConsumes)) {
-        if (contentType.rawValue().isEmpty()) {
-          return 400;
-        } else {
-          return 415;
-        }
+        return 415;
       }
     }
     if (!isEmpty(produces)) {
@@ -1194,7 +1256,7 @@ final class RouteState {
       if (requestPath.startsWith(thePath)) {
         // handle the "rest" as path param *
         ctx.pathParams()
-          .put("*", URIDecoder.decodeURIComponent(requestPath.substring(thePath.length()), false));
+          .put("*", RFC3986.decodeURIComponent(requestPath.substring(thePath.length()), false));
         return true;
       }
       return false;
@@ -1206,11 +1268,12 @@ final class RouteState {
       return true;
     }
 
-    String host = request.host();
-    if (host == null) {
+    HostAndPort authority = request.authority();
+    if (authority == null) {
       return false;
     }
 
+    String host = authority.host();
     int len = host.length();
 
     // knowing that the shortest IPv6 is [::]
@@ -1249,21 +1312,20 @@ final class RouteState {
       if (other.charAt(len -1) == '/') {
         // final slash is not significant, ignore it
         len--;
+        if (base.length() != len) {
+          return false;
+        }
+        // content must match
+        return other.regionMatches(0, base, 0, len);
       }
     }
-
-    // lengths are not the same (fail)
-    if (base.length() != len) {
-      return false;
-    }
-
     // content must match
-    return other.regionMatches(0, base, 0, len);
+    return other.equals(base);
   }
 
   private void addPathParam(RoutingContext context, String name, String value) {
     HttpServerRequest request = context.request();
-    final String decodedValue = URIDecoder.decodeURIComponent(value, false);
+    final String decodedValue = RFC3986.decodeURIComponent(value, false);
     if (!request.params().contains(name)) {
       request.params().add(name, decodedValue);
     }
@@ -1278,16 +1340,33 @@ final class RouteState {
     return context.currentRouteNextFailureHandlerIndex() < getFailureHandlersLength();
   }
 
+  /**
+   * This replace ContextInternal#dispatch in order to avoid breaking changes with the handler failure rerouting,
+   * we still want to report the error to the context for proper unit testing.
+   */
+  private void dispatch(RoutingContextImplBase context, Handler<RoutingContext> handler) {
+    try {
+      handler.handle(context);
+    } catch (AssertionError t) {
+      // Report to Vert.x context for JUnit integration
+      ContextInternal ctx = ((HttpServerRequestInternal) context.request()).context();
+      try {
+        ctx.reportException(t);
+      } catch (Throwable ignore) {
+      }
+      // Rethrow as it is expected
+      throw t;
+    }
+  }
+
   void handleContext(RoutingContextImplBase context) {
-    contextHandlers
-      .get(context.currentRouteNextHandlerIndex() - 1)
-      .handle(context);
+    Handler<RoutingContext> handler = contextHandlers.get(context.currentRouteNextHandlerIndex() - 1);
+    dispatch(context, handler);
   }
 
   void handleFailure(RoutingContextImplBase context) {
-    failureHandlers
-      .get(context.currentRouteNextFailureHandlerIndex() - 1)
-      .handle(context);
+    Handler<RoutingContext> handler = failureHandlers.get(context.currentRouteNextFailureHandlerIndex() - 1);
+    dispatch(context, handler);
   }
 
   public String getName() {
@@ -1326,6 +1405,7 @@ final class RouteState {
       ", pathEndsWithSlash=" + pathEndsWithSlash +
       ", exclusive=" + exclusive +
       ", exactPath=" + exactPath +
+      ", subRouter=" + subRouter +
       '}';
   }
 }

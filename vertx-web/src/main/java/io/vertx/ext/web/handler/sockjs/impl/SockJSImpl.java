@@ -32,15 +32,16 @@
 
 package io.vertx.ext.web.handler.sockjs.impl;
 
+import io.netty.util.internal.StringUtil;
 import io.vertx.core.Handler;
 import io.vertx.core.Vertx;
 import io.vertx.core.buffer.Buffer;
 import io.vertx.core.http.HttpHeaders;
 import io.vertx.core.http.HttpServerResponse;
-import io.vertx.core.impl.logging.Logger;
-import io.vertx.core.impl.logging.LoggerFactory;
+import io.vertx.core.internal.logging.Logger;
+import io.vertx.core.internal.logging.LoggerFactory;
 import io.vertx.core.shareddata.LocalMap;
-import io.vertx.ext.auth.VertxContextPRNG;
+import io.vertx.ext.auth.prng.VertxContextPRNG;
 import io.vertx.ext.auth.authorization.AuthorizationProvider;
 import io.vertx.ext.web.Router;
 import io.vertx.ext.web.RoutingContext;
@@ -53,7 +54,6 @@ import java.text.SimpleDateFormat;
 import java.util.*;
 
 import static io.vertx.core.buffer.Buffer.buffer;
-import static io.vertx.ext.auth.impl.Codec.base16Encode;
 import static io.vertx.ext.web.handler.sockjs.impl.BaseTransport.createCORSOptionsHandler;
 import static io.vertx.ext.web.handler.sockjs.impl.BaseTransport.createInfoHandler;
 
@@ -79,12 +79,6 @@ public class SockJSImpl implements SockJSHandler {
   @Override
   public Router bridge(AuthorizationProvider authorizationProvider, SockJSBridgeOptions bridgeOptions, Handler<BridgeEvent> bridgeEventHandler) {
     return socketHandler(new EventBusBridgeImpl(vertx, authorizationProvider, bridgeOptions, bridgeEventHandler));
-  }
-
-  @Override
-  @Deprecated
-  public void handle(RoutingContext routingContext) {
-    throw new UnsupportedOperationException("Mount the router as a sub-router instead. This method will not properly handle errors.");
   }
 
   @Override
@@ -245,7 +239,7 @@ public class SockJSImpl implements SockJSHandler {
     try {
       MessageDigest md = MessageDigest.getInstance("MD5");
       byte[] bytes = md.digest(str.getBytes(StandardCharsets.UTF_8));
-      return base16Encode(bytes);
+      return StringUtil.toHexString(bytes);
     } catch (Exception e) {
       LOG.error("Failed to generate MD5 for iframe, If-None-Match headers will be ignored");
       return null;
@@ -270,4 +264,3 @@ public class SockJSImpl implements SockJSHandler {
       "</body>\n" +
       "</html>";
 }
-

@@ -34,17 +34,6 @@ import java.util.Set;
 public interface CorsHandler extends SecurityPolicyHandler {
 
   /**
-   * Create a CORS handler using a regular expression to match origins. An origin follows rfc6454#section-7
-   * and is expected to have the format: {@code <scheme> "://" <hostname> [ ":" <port> ]}
-   *
-   * @param allowedOriginPattern  the allowed origin pattern
-   * @return  the handler
-   */
-  static CorsHandler create(String allowedOriginPattern) {
-    return new CorsHandlerImpl(allowedOriginPattern);
-  }
-
-  /**
    * Create a empty CORS handler that allows {@code *} origin.
    * @return the handler
    */
@@ -60,6 +49,24 @@ public interface CorsHandler extends SecurityPolicyHandler {
    */
   @Fluent
   CorsHandler addOrigin(String origin);
+
+  /**
+   * Set the list of allowed regex origins.
+   * A regex origin is a pattern that should match the format {@code <scheme> "://" <hostname> [ ":" <port> ]}.
+   * @param origins the well formatted regex origin list
+   * @return self
+   */
+  @Fluent
+  CorsHandler addOriginsWithRegex(List<String> origins);
+
+  /**
+   * Add a regex origin to the list of allowed Origins.
+   * A regex origin is a pattern that should match the format {@code <scheme> "://" <hostname> [ ":" <port> ]}.
+   * @param origin the well formatted static origin
+   * @return self
+   */
+  @Fluent
+  CorsHandler addOriginWithRegex(String origin);
 
   /**
    * Set the list of allowed origins. An origin follows rfc6454#section-7

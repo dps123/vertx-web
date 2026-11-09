@@ -16,28 +16,31 @@
 
 package io.vertx.ext.web.handler.impl;
 
-import io.vertx.core.AsyncResult;
 import io.vertx.core.Future;
-import io.vertx.core.Handler;
 import io.vertx.core.Vertx;
+import io.vertx.core.VertxException;
 import io.vertx.core.http.HttpHeaders;
 import io.vertx.core.http.HttpMethod;
-import io.vertx.core.impl.logging.Logger;
-import io.vertx.core.impl.logging.LoggerFactory;
+import io.vertx.core.internal.logging.Logger;
+import io.vertx.core.internal.logging.LoggerFactory;
 import io.vertx.core.json.JsonObject;
 import io.vertx.ext.auth.User;
-import io.vertx.ext.auth.VertxContextPRNG;
+import io.vertx.ext.auth.audit.Marker;
+import io.vertx.ext.auth.audit.SecurityAudit;
 import io.vertx.ext.auth.authentication.Credentials;
 import io.vertx.ext.auth.authentication.TokenCredentials;
 import io.vertx.ext.auth.oauth2.OAuth2Auth;
+import io.vertx.ext.auth.oauth2.OAuth2AuthorizationURL;
+import io.vertx.ext.auth.oauth2.OAuth2FlowType;
 import io.vertx.ext.auth.oauth2.Oauth2Credentials;
+import io.vertx.ext.auth.prng.VertxContextPRNG;
 import io.vertx.ext.web.Route;
 import io.vertx.ext.web.RoutingContext;
 import io.vertx.ext.web.Session;
 import io.vertx.ext.web.handler.HttpException;
 import io.vertx.ext.web.handler.OAuth2AuthHandler;
-import io.vertx.ext.web.impl.OrderListener;
-import io.vertx.ext.web.impl.Origin;
+import io.vertx.ext.web.impl.*;
+import io.vertx.ext.web.internal.handler.ScopedAuthentication;
 
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
@@ -56,7 +59,6 @@ public class OAuth2AuthHandlerImpl extends HTTPAuthorizationHandler<OAuth2Auth> 
   private final MessageDigest sha256;
 
   private final List<String> scopes;
-  private final boolean openId;
   private JsonObject extraParams;
   private String prompt;
   private int pkce = -1;
@@ -87,8 +89,7 @@ public class OAuth2AuthHandlerImpl extends HTTPAuthorizationHandler<OAuth2Auth> 
       this.callbackURL = null;
     }
     // scopes are empty by default
-    this.scopes = new ArrayList<>();
-    this.openId = false;
+    this.scopes = Collections.emptyList();
   }
 
   private OAuth2AuthHandlerImpl(OAuth2AuthHandlerImpl base, List<String> scopes) {
@@ -107,30 +108,26 @@ public class OAuth2AuthHandlerImpl extends HTTPAuthorizationHandler<OAuth2Auth> 
     }
     // state copy
     if (base.extraParams != null) {
-      extraParams = extraParams.copy();
+      extraParams = base.extraParams.copy();
     }
+    this.callback = base.callback;
+    this.order = base.order;
     // apply the new scopes
+    Objects.requireNonNull(scopes, "scopes cannot be null");
     this.scopes = scopes;
-    this.openId = scopes != null && scopes.contains("openid");
   }
 
   @Override
-  public void authenticate(RoutingContext context, Handler<AsyncResult<User>> handler) {
+  public Future<User> authenticate(RoutingContext context) {
     // when the handler is working as bearer only, then the `Authorization` header is required
-    parseAuthorization(context, !bearerOnly, parseAuthorization -> {
-      if (parseAuthorization.failed()) {
-        handler.handle(Future.failedFuture(parseAuthorization.cause()));
-        return;
-      }
+    return parseAuthorization(context, !bearerOnly)
+      .compose(token -> {
       // Authorization header can be null when in not in bearerOnly mode
-      final String token = parseAuthorization.result();
-
       if (token == null) {
         // redirect request to the oauth2 server as we know nothing about this request
         if (bearerOnly) {
           // it's a failure both cases but the cause is not the same
-          handler.handle(Future.failedFuture("callback route is not configured."));
-          return;
+          return Future.failedFuture("callback route is not configured.");
         }
         // when this handle is mounted as a catch all, the callback route must be configured before,
         // as it would shade the callback route. When a request matches the callback path and has the
@@ -138,96 +135,111 @@ public class OAuth2AuthHandlerImpl extends HTTPAuthorizationHandler<OAuth2Auth> 
         // an infinite redirect loop. In this case an exception must be raised.
         if (context.request().method() == HttpMethod.GET && context.normalizedPath().equals(callbackURL.resource())) {
           LOG.warn("The callback route is shaded by the OAuth2AuthHandler, ensure the callback route is added BEFORE the OAuth2AuthHandler route!");
-          handler.handle(Future.failedFuture(new HttpException(500, "Infinite redirect loop [oauth2 callback]")));
+          return Future.failedFuture(new HttpException(500, "Infinite redirect loop [oauth2 callback]"));
         } else {
           if (context.request().method() != HttpMethod.GET) {
             // we can only redirect GET requests
             LOG.error("OAuth2 redirect attempt to non GET resource");
-            context.fail(405, new IllegalStateException("OAuth2 redirect attempt to non GET resource"));
-            return;
+            return Future.failedFuture(new HttpException(405, new IllegalStateException("OAuth2 redirect attempt to non GET resource")));
           }
 
           // the redirect is processed as a failure to abort the chain
           String redirectUri = context.request().uri();
-          String state = null;
-          String codeVerifier = null;
-
-          final Session session = context.session();
-
-          if (session == null) {
-            if (pkce > 0) {
-              // we can only handle PKCE with a session
-              context.fail(500, new IllegalStateException("OAuth2 PKCE requires a session to be present"));
-              return;
-            }
-          } else {
-            // there's a session we can make this request comply to the Oauth2 spec and add an opaque state
-            session
-              .put("redirect_uri", context.request().uri());
-
-            // create a state value to mitigate replay attacks
-            state = prng.nextString(6);
-            // store the state in the session
-            session
-              .put("state", state);
-
-            if (pkce > 0) {
-              codeVerifier = prng.nextString(pkce);
-              // store the code verifier in the session
-              session
-                .put("pkce", codeVerifier);
-            }
+          try {
+            return Future.failedFuture(new HttpException(302, authURI(context, redirectUri)));
+          } catch (IllegalStateException e) {
+            return Future.failedFuture(e);
           }
-          handler.handle(Future.failedFuture(new HttpException(302, authURI(redirectUri, state, codeVerifier))));
         }
       } else {
         // continue
+        final List<String> scopes = getScopesOrSearchMetadata(this.scopes, context);
+
         final Credentials credentials =
           scopes.size() > 0 ? new TokenCredentials(token).setScopes(scopes) : new TokenCredentials(token);
 
-        authProvider.authenticate(credentials, authn -> {
-          if (authn.failed()) {
-            handler.handle(Future.failedFuture(new HttpException(401, authn.cause())));
-          } else {
-            handler.handle(authn);
-          }
-        });
+        final SecurityAudit audit = ((RoutingContextInternal) context).securityAudit();
+        audit.credentials(credentials);
+
+        return authProvider.authenticate(credentials)
+          .andThen(op -> audit.audit(Marker.AUTHENTICATION, op.succeeded()))
+          .recover(err -> Future.failedFuture(new HttpException(401, err)));
       }
     });
   }
 
-  private String authURI(String redirectURL, String state, String codeVerifier) {
-    final JsonObject config = new JsonObject();
+  private String authURI(RoutingContext context, String redirectURL) {
+
+    String state = null;
+    String codeVerifier = null;
+    String loginHint = null;
+
+    final Session session = context.session();
+
+    if (session == null) {
+      if (pkce > 0) {
+        // we can only handle PKCE with a session
+        throw new IllegalStateException("OAuth2 PKCE requires a session to be present");
+      }
+    } else {
+      // there's a session we can make this request comply to the Oauth2 spec and add an opaque state
+
+      loginHint = session.get("login_hint");
+      // hint will be considered at least once
+      session.remove("login_hint");
+
+      session
+        .put("redirect_uri", redirectURL);
+
+      // create a state value to mitigate replay attacks
+      state = prng.nextString(6);
+      // store the state in the session
+      session
+        .put("state", state);
+
+      if (pkce > 0) {
+        codeVerifier = prng.nextString(pkce);
+        // store the code verifier in the session
+        session
+          .put("pkce", codeVerifier);
+      }
+    }
+
+    final OAuth2AuthorizationURL config = new OAuth2AuthorizationURL();
 
     if (extraParams != null) {
-      config.mergeIn(extraParams);
+      for (Map.Entry<String, Object> entry : extraParams) {
+        if (entry.getValue() != null) {
+          config.putAdditionalParameter(entry.getKey(), entry.getValue().toString());
+        }
+      }
     }
 
     config
-      .put("state", state != null ? state : redirectURL);
+      .setState(state != null ? state : redirectURL)
+      .setLoginHint(loginHint)
+      .setPrompt(prompt);
 
     if (callbackURL != null) {
-      config.put("redirect_uri", callbackURL.href());
+      config.setRedirectUri(callbackURL.href());
     }
+
+    final List<String> scopes = getScopesOrSearchMetadata(this.scopes, context);
 
     if (scopes.size() > 0) {
-      config.put("scopes", scopes);
-    }
-
-    if (prompt != null) {
-      config.put("prompt", prompt);
+      config.setScopes(scopes);
     }
 
     if (codeVerifier != null) {
       synchronized (sha256) {
         sha256.update(codeVerifier.getBytes(StandardCharsets.US_ASCII));
         config
-          .put("code_challenge", sha256.digest())
-          .put("code_challenge_method", "S256");
+          .setCodeChallenge(Utils.base64UrlEncode(sha256.digest()))
+          .setCodeChallengeMethod("S256");
       }
     }
 
-    return authProvider.authorizeURL(config);
+    return authProvider.authorizeURL(new OAuth2AuthorizationURL(config));
   }
 
   @Override
@@ -238,6 +250,8 @@ public class OAuth2AuthHandlerImpl extends HTTPAuthorizationHandler<OAuth2Auth> 
 
   @Override
   public OAuth2AuthHandler withScope(String scope) {
+    Objects.requireNonNull(scope, "scope cannot be null");
+
     List<String> updatedScopes = new ArrayList<>(this.scopes);
     updatedScopes.add(scope);
     return new OAuth2AuthHandlerImpl(this, updatedScopes);
@@ -245,6 +259,7 @@ public class OAuth2AuthHandlerImpl extends HTTPAuthorizationHandler<OAuth2Auth> 
 
   @Override
   public OAuth2AuthHandler withScopes(List<String> scopes) {
+    Objects.requireNonNull(scopes, "scopes cannot be null");
     return new OAuth2AuthHandlerImpl(this, scopes);
   }
 
@@ -259,7 +274,7 @@ public class OAuth2AuthHandlerImpl extends HTTPAuthorizationHandler<OAuth2Auth> 
     if (length >= 0) {
       // requires verification
       if (length < 43 || length > 128) {
-        throw new IllegalArgumentException("Length must be between 34 and 128");
+        throw new IllegalArgumentException("Length must be between 43 and 128");
       }
     }
     this.pkce = length;
@@ -318,46 +333,53 @@ public class OAuth2AuthHandlerImpl extends HTTPAuthorizationHandler<OAuth2Auth> 
    */
   @Override
   public void postAuthentication(RoutingContext ctx) {
-    // the user is authenticated, however the user may not have all the required scopes
-    if (scopes != null && scopes.size() > 0) {
-      final User user = ctx.user();
+    verifyScopes(ctx, ctx.user())
+      .onSuccess(v -> ctx.next())
+      .onFailure(err -> ctx.fail(403, err));
+  }
+
+  @Override
+  public Future<Void> verifyScopes(RoutingContext ctx, User user) {
+    final List<String> scopes = getScopesOrSearchMetadata(this.scopes, ctx);
+
+    if (!scopes.isEmpty()) {
       if (user == null) {
-        // bad state
-        ctx.fail(403, new IllegalStateException("no user in the context"));
-        return;
+        return Future.failedFuture(new VertxException("no user in the context", true));
       }
 
       if (user.principal().containsKey("scope")) {
-        final String scopes = user.principal().getString("scope");
-        if (scopes != null) {
+        final String userScopes = user.principal().getString("scope");
+        if (userScopes != null) {
           // user principal contains scope, a basic assertion is required to ensure that
           // the scopes present match the required ones
-          for (String scope : this.scopes) {
+
+          // check if openid is active
+          final boolean openId = userScopes.contains("openid");
+
+          for (String scope : scopes) {
             // do not assert openid scopes if openid is active
             if (openId && OPENID_SCOPES.contains(scope)) {
               continue;
             }
 
-            int idx = scopes.indexOf(scope);
+            int idx = userScopes.indexOf(scope);
             if (idx != -1) {
               // match, but is it valid?
               if (
-                (idx != 0 && scopes.charAt(idx -1) != ' ') ||
-                  (idx + scope.length() != scopes.length() && scopes.charAt(idx + scope.length()) != ' ')) {
+                (idx != 0 && userScopes.charAt(idx -1) != ' ') ||
+                  (idx + scope.length() != userScopes.length() && userScopes.charAt(idx + scope.length()) != ' ')) {
                 // invalid scope assignment
-                ctx.fail(403, new IllegalStateException("principal scope != handler scopes"));
-                return;
+                return Future.failedFuture(new VertxException("principal scope != handler scopes", true));
               }
             } else {
               // invalid scope assignment
-              ctx.fail(403, new IllegalStateException("principal scope != handler scopes"));
-              return;
+              return Future.failedFuture(new VertxException("principal scope != handler scopes", true));
             }
           }
         }
       }
     }
-    ctx.next();
+    return Future.succeededFuture();
   }
 
   @Override
@@ -417,9 +439,9 @@ public class OAuth2AuthHandlerImpl extends HTTPAuthorizationHandler<OAuth2Auth> 
 
         String errorDescription = ctx.request().getParam("error_description");
         if (errorDescription != null) {
-          ctx.fail(errorCode, new IllegalStateException(error + ": " + errorDescription));
+          ctx.fail(errorCode, new VertxException(error + ": " + errorDescription, true));
         } else {
-          ctx.fail(errorCode, new IllegalStateException(error));
+          ctx.fail(errorCode, new VertxException(error, true));
         }
         return;
       }
@@ -429,11 +451,12 @@ public class OAuth2AuthHandlerImpl extends HTTPAuthorizationHandler<OAuth2Auth> 
 
       // code is a require value
       if (code == null) {
-        ctx.fail(400, new IllegalStateException("Missing code parameter"));
+        ctx.fail(400, new VertxException("Missing code parameter", true));
         return;
       }
 
       final Oauth2Credentials credentials = new Oauth2Credentials()
+        .setFlow(OAuth2FlowType.AUTH_CODE)
         .setCode(code);
 
       // the state that was passed to the IdP server. The state can be
@@ -444,7 +467,7 @@ public class OAuth2AuthHandlerImpl extends HTTPAuthorizationHandler<OAuth2Auth> 
 
       // state is a required field
       if (state == null) {
-        ctx.fail(400, new IllegalStateException("Missing IdP state parameter to the callback endpoint"));
+        ctx.fail(400, new VertxException("Missing IdP state parameter to the callback endpoint", true));
         return;
       }
 
@@ -458,7 +481,7 @@ public class OAuth2AuthHandlerImpl extends HTTPAuthorizationHandler<OAuth2Auth> 
         // if there's a state in the context they must match
         if (!state.equals(ctxState)) {
           // forbidden, the state is not valid (this is a replay attack)
-          ctx.fail(401, new IllegalStateException("Invalid oauth2 state"));
+          ctx.fail(401, new VertxException("Invalid oauth2 state", true));
           return;
         }
 
@@ -476,11 +499,16 @@ public class OAuth2AuthHandlerImpl extends HTTPAuthorizationHandler<OAuth2Auth> 
       // This must exactly match the redirect_uri passed to the authorization URL in the previous step.
       credentials.setRedirectUri(callbackURL.href());
 
-      authProvider.authenticate(credentials, res -> {
-        if (res.failed()) {
-          ctx.fail(res.cause());
-        } else {
-          ctx.setUser(res.result());
+      final SecurityAudit audit = ((RoutingContextInternal) ctx).securityAudit();
+      audit.credentials(credentials);
+
+      authProvider
+        .authenticate(credentials)
+        .andThen(op -> audit.audit(Marker.AUTHENTICATION, op.succeeded()))
+        .onFailure(ctx::fail)
+        .onSuccess(user -> {
+          ((UserContextInternal) ctx.userContext())
+            .setUser(user);
           String location = resource != null ? resource : "/";
           if (session != null) {
             // the user has upgraded from unauthenticated to authenticated
@@ -506,7 +534,6 @@ public class OAuth2AuthHandlerImpl extends HTTPAuthorizationHandler<OAuth2Auth> 
             .putHeader(HttpHeaders.LOCATION, location)
             .setStatusCode(302)
             .end("Redirecting to " + location + ".");
-        }
       });
     });
   }

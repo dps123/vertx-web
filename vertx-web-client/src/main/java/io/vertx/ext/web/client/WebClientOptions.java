@@ -17,11 +17,12 @@
 package io.vertx.ext.web.client;
 
 import io.vertx.codegen.annotations.DataObject;
+import io.vertx.codegen.json.annotations.JsonGen;
 import io.vertx.core.buffer.Buffer;
 import io.vertx.core.http.Http2Settings;
 import io.vertx.core.http.HttpClientOptions;
 import io.vertx.core.http.HttpVersion;
-import io.vertx.core.impl.launcher.commands.VersionCommand;
+import io.vertx.core.internal.VertxInternal;
 import io.vertx.core.json.JsonObject;
 import io.vertx.core.net.*;
 import io.vertx.core.tracing.TracingPolicy;
@@ -34,7 +35,8 @@ import java.util.concurrent.TimeUnit;
 /**
  * @author Thomas Segismont
  */
-@DataObject(generateConverter = true)
+@DataObject
+@JsonGen(publicConverter = false)
 public class WebClientOptions extends HttpClientOptions {
 
   /**
@@ -233,38 +235,8 @@ public class WebClientOptions extends HttpClientOptions {
   }
 
   @Override
-  public WebClientOptions setKeyStoreOptions(JksOptions options) {
-    return (WebClientOptions) super.setKeyStoreOptions(options);
-  }
-
-  @Override
-  public WebClientOptions setPfxKeyCertOptions(PfxOptions options) {
-    return (WebClientOptions) super.setPfxKeyCertOptions(options);
-  }
-
-  @Override
   public WebClientOptions setTrustOptions(TrustOptions options) {
     return (WebClientOptions) super.setTrustOptions(options);
-  }
-
-  @Override
-  public WebClientOptions setPemKeyCertOptions(PemKeyCertOptions options) {
-    return (WebClientOptions) super.setPemKeyCertOptions(options);
-  }
-
-  @Override
-  public WebClientOptions setTrustStoreOptions(JksOptions options) {
-    return (WebClientOptions) super.setTrustStoreOptions(options);
-  }
-
-  @Override
-  public WebClientOptions setPfxTrustOptions(PfxOptions options) {
-    return (WebClientOptions) super.setPfxTrustOptions(options);
-  }
-
-  @Override
-  public WebClientOptions setPemTrustOptions(PemTrustOptions options) {
-    return (WebClientOptions) super.setPemTrustOptions(options);
   }
 
   @Override
@@ -293,18 +265,8 @@ public class WebClientOptions extends HttpClientOptions {
   }
 
   @Override
-  public WebClientOptions setMaxPoolSize(int maxPoolSize) {
-    return (WebClientOptions) super.setMaxPoolSize(maxPoolSize);
-  }
-
-  @Override
   public WebClientOptions setHttp2MultiplexingLimit(int limit) {
     return (WebClientOptions) super.setHttp2MultiplexingLimit(limit);
-  }
-
-  @Override
-  public WebClientOptions setHttp2MaxPoolSize(int max) {
-    return (WebClientOptions) super.setHttp2MaxPoolSize(max);
   }
 
   @Override
@@ -333,18 +295,8 @@ public class WebClientOptions extends HttpClientOptions {
   }
 
   @Override
-  public WebClientOptions setTryUseCompression(boolean tryUseCompression) {
-    return (WebClientOptions) super.setTryUseCompression(tryUseCompression);
-  }
-
-  @Override
-  public WebClientOptions setSendUnmaskedFrames(boolean sendUnmaskedFrames) {
-    return (WebClientOptions) super.setSendUnmaskedFrames(sendUnmaskedFrames);
-  }
-
-  @Override
-  public WebClientOptions setMaxWebSocketFrameSize(int maxWebsocketFrameSize) {
-    return (WebClientOptions) super.setMaxWebSocketFrameSize(maxWebsocketFrameSize);
+  public WebClientOptions setDecompressionSupported(boolean tryUseCompression) {
+    return (WebClientOptions) super.setDecompressionSupported(tryUseCompression);
   }
 
   @Override
@@ -373,11 +325,6 @@ public class WebClientOptions extends HttpClientOptions {
   }
 
   @Override
-  public WebClientOptions setMaxWaitQueueSize(int maxWaitQueueSize) {
-    return (WebClientOptions) super.setMaxWaitQueueSize(maxWaitQueueSize);
-  }
-
-  @Override
   public WebClientOptions setUseAlpn(boolean useAlpn) {
     return (WebClientOptions) super.setUseAlpn(useAlpn);
   }
@@ -385,16 +332,6 @@ public class WebClientOptions extends HttpClientOptions {
   @Override
   public WebClientOptions setSslEngineOptions(SSLEngineOptions sslEngineOptions) {
     return (WebClientOptions) super.setSslEngineOptions(sslEngineOptions);
-  }
-
-  @Override
-  public WebClientOptions setJdkSslEngineOptions(JdkSSLEngineOptions sslEngineOptions) {
-    return (WebClientOptions) super.setJdkSslEngineOptions(sslEngineOptions);
-  }
-
-  @Override
-  public WebClientOptions setOpenSslEngineOptions(OpenSSLEngineOptions sslEngineOptions) {
-    return (WebClientOptions) super.setOpenSslEngineOptions(sslEngineOptions);
   }
 
   @Override
@@ -478,18 +415,8 @@ public class WebClientOptions extends HttpClientOptions {
   }
 
   @Override
-  public WebClientOptions setPoolCleanerPeriod(int poolCleanerPeriod) {
-    return (WebClientOptions) super.setPoolCleanerPeriod(poolCleanerPeriod);
-  }
-
-  @Override
   public WebClientOptions setKeepAliveTimeout(int keepAliveTimeout) {
     return (WebClientOptions) super.setKeepAliveTimeout(keepAliveTimeout);
-  }
-
-  @Override
-  public WebClientOptions setMaxWebSocketMessageSize(int maxWebsocketMessageSize) {
-    return (WebClientOptions) super.setMaxWebSocketMessageSize(maxWebsocketMessageSize);
   }
 
   @Override
@@ -513,31 +440,6 @@ public class WebClientOptions extends HttpClientOptions {
   }
 
   @Override
-  public WebClientOptions setTryUsePerFrameWebSocketCompression(boolean offer) {
-    return (WebClientOptions) super.setTryUsePerFrameWebSocketCompression(offer);
-  }
-
-  @Override
-  public WebClientOptions setTryUsePerMessageWebSocketCompression(boolean offer) {
-    return (WebClientOptions) super.setTryUsePerMessageWebSocketCompression(offer);
-  }
-
-  @Override
-  public WebClientOptions setWebSocketCompressionLevel(int compressionLevel) {
-    return (WebClientOptions) super.setWebSocketCompressionLevel(compressionLevel);
-  }
-
-  @Override
-  public WebClientOptions setWebSocketCompressionAllowClientNoContext(boolean offer) {
-    return (WebClientOptions) super.setWebSocketCompressionAllowClientNoContext(offer);
-  }
-
-  @Override
-  public WebClientOptions setWebSocketCompressionRequestServerNoContext(boolean offer) {
-    return (WebClientOptions) super.setWebSocketCompressionRequestServerNoContext(offer);
-  }
-
-  @Override
   public WebClientOptions setReadIdleTimeout(int idleTimeout) {
     return (WebClientOptions) super.setReadIdleTimeout(idleTimeout);
   }
@@ -545,11 +447,6 @@ public class WebClientOptions extends HttpClientOptions {
   @Override
   public WebClientOptions setWriteIdleTimeout(int idleTimeout) {
     return (WebClientOptions) super.setWriteIdleTimeout(idleTimeout);
-  }
-
-  @Override
-  public WebClientOptions setMaxWebSockets(int maxWebSockets) {
-    return (WebClientOptions) super.setMaxWebSockets(maxWebSockets);
   }
 
   @Override
@@ -563,18 +460,8 @@ public class WebClientOptions extends HttpClientOptions {
   }
 
   @Override
-  public WebClientOptions setWebSocketClosingTimeout(int webSocketClosingTimeout) {
-    return (WebClientOptions) super.setWebSocketClosingTimeout(webSocketClosingTimeout);
-  }
-
-  @Override
   public WebClientOptions setTracingPolicy(TracingPolicy tracingPolicy) {
     return (WebClientOptions) super.setTracingPolicy(tracingPolicy);
-  }
-
-  @Override
-  public WebClientOptions setPoolEventLoopSize(int poolEventLoopSize) {
-    return (WebClientOptions) super.setPoolEventLoopSize(poolEventLoopSize);
   }
 
   @Override
@@ -589,7 +476,7 @@ public class WebClientOptions extends HttpClientOptions {
 
   public static String loadUserAgent() {
     String userAgent = "Vert.x-WebClient";
-    String version = VersionCommand.getVersion();
+    String version = VertxInternal.version();
     if (version.length() > 0) {
       userAgent += "/" + version;
     }

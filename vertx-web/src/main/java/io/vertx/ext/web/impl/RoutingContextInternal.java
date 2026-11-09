@@ -18,6 +18,7 @@ package io.vertx.ext.web.impl;
 import io.vertx.codegen.annotations.CacheReturn;
 import io.vertx.codegen.annotations.Nullable;
 import io.vertx.core.buffer.Buffer;
+import io.vertx.ext.auth.audit.SecurityAudit;
 import io.vertx.ext.web.Router;
 import io.vertx.ext.web.RoutingContext;
 import io.vertx.ext.web.Session;
@@ -31,6 +32,8 @@ public interface RoutingContextInternal extends RoutingContext {
 
   int BODY_HANDLER = 1 << 1;
   int CORS_HANDLER = 1 << 2;
+  int SESSION_HANDLER = 1 << 3;
+  int CSRF_HANDLER = 1 << 4;
 
   /**
    * flags the current routing context as having visited the handler with {@code id}.
@@ -54,6 +57,22 @@ public interface RoutingContextInternal extends RoutingContext {
    * @return fluent self
    */
   RoutingContextInternal setMatchFailure(int matchFailure);
+
+  /**
+   * adds allowed methods to the context for 405 responses.
+   *
+   * @param allowedMethods the allowed methods to add
+   * @return fluent self
+   */
+  RoutingContextInternal addAllowedMethods(java.util.Set<io.vertx.core.http.HttpMethod> allowedMethods);
+
+  /**
+   * adds allowed content types to the context for 415 responses.
+   *
+   * @param allowedContentTypes the allowed content types to add
+   * @return fluent self
+   */
+  RoutingContextInternal addAllowedContentTypes(java.util.Set<io.vertx.ext.web.MIMEHeader> allowedContentTypes);
 
   /**
    * @return the current router this context is being routed through. All routingContext is associated with a router and
@@ -103,6 +122,15 @@ public interface RoutingContextInternal extends RoutingContext {
       }
       return null;
     }
+  }
 
-  };
+  /**
+   * Get or Default the security audit object.
+   */
+  SecurityAudit securityAudit();
+
+  /**
+   * Get or Default the security audit object.
+   */
+  void setSecurityAudit(SecurityAudit securityAudit);
 }

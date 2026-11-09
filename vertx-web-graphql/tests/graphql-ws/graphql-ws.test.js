@@ -14,71 +14,112 @@
  * under the License.
  */
 
-import {createClient} from "graphql-ws";
+import {WebSocket} from "ws"
+import {createClient, MessageType} from "graphql-ws"
 
-let client;
+let client
 
 afterEach(() => {
   if (client) {
-    client.dispose();
-    client = null;
+    client.dispose()
+    client = null
   }
-});
+})
 
 test('query', async () => {
   client = createClient({
     url: 'ws://localhost:8080/graphql',
-  });
+    webSocketImpl: WebSocket
+  })
 
   const result = await new Promise((resolve, reject) => {
-    let result;
+    let result
     client.subscribe(
       {
         query: '{ hello }',
       },
       {
-        next: (data) => (result = data),
+        next(data) {
+          result = data
+        },
         error: reject,
-        complete: () => resolve(result),
+        complete() {
+          resolve(result)
+        },
       },
-    );
-  });
+    )
+  })
 
-  expect(result).toEqual({data: {hello: 'Hello World!'}});
-});
+  expect(result).toEqual({data: {hello: 'Hello World!'}})
+})
 
 test('subscription', async () => {
   client = createClient({
     url: 'ws://localhost:8080/graphql',
-  });
+    webSocketImpl: WebSocket
+  })
 
-  const onNext = jest.fn(() => {
-  });
-
-  await new Promise((resolve, reject) => {
+  const result = await new Promise((resolve, reject) => {
+    let result = []
     client.subscribe(
       {
         query: 'subscription { greetings }',
       },
       {
-        next: onNext,
+        next(val) {
+          result.push(val)
+        },
         error: reject,
-        complete: resolve,
+        complete() {
+          resolve(result)
+        },
       },
-    );
-  });
+    )
+  })
 
-  expect(onNext).toBeCalledTimes(5); // we say "Hi" in 5 languages
-});
+  const expected = ['Hi', 'Bonjour', 'Hola', 'Ciao', 'Zdravo'].map(value => ({data: {greetings: value}}))
+  expect(result).toStrictEqual(expected)
+})
+
+test('subscription with error', async () => {
+  client = createClient({
+    url: 'ws://localhost:8080/graphql',
+    webSocketImpl: WebSocket
+  })
+
+  const result = await new Promise((resolve, reject) => {
+    let result = []
+    client.subscribe(
+      {
+        query: 'subscription { greetAndFail }',
+      },
+      {
+        next(val) {
+          result.push(val)
+        },
+        error(reason) {
+          result.push(reason)
+          resolve(result)
+        },
+        complete: reject,
+      },
+    )
+  })
+
+  const expected = [{data: {greetAndFail: 'Hi'}}, [{message: 'java.lang.Exception: boom'}]]
+  expect(result).toStrictEqual(expected)
+})
 
 test('ws link subscription with failed promise', async () => {
   client = createClient({
-    url: 'ws://localhost:8080/graphql',
+    url: 'ws://localhost:8080/graphqlWithInitHandler',
+    webSocketImpl: WebSocket,
     connectionParams: {
-      rejectMessage: "test"
+      rejectMessage: 'test'
     }
-  });
+  })
 
+  let err
   try {
     await new Promise((resolve, reject) => {
       client.subscribe(
@@ -86,15 +127,54 @@ test('ws link subscription with failed promise', async () => {
           query: 'subscription { greetings }',
         },
         {
-          next: value => {
+          next: () => {
           },
           error: error => reject(error),
           complete: resolve,
         },
-      );
-    });
+      )
+    })
   } catch (e) {
-    expect(e).toBeInstanceOf(CloseEvent);
-    expect(e.code).toEqual(4401);
+    err = e
   }
-});
+  expect(err).toBeDefined()
+  expect(err.code).toEqual(4401)
+})
+
+test('complete message without id from client should result in connection close with error', async () => {
+  let err
+
+  client = createClient({
+    url: 'ws://localhost:8080/graphql',
+    webSocketImpl: WebSocket,
+    on: {
+      connected: (socket) => {
+        socket.send(
+            JSON.stringify({
+              type: MessageType.Complete
+            })
+        )
+      }
+    }
+  })
+
+  try {
+    await new Promise((resolve, reject) => {
+      client.subscribe(
+          {
+            query: 'subscription { greetings }',
+          },
+          {
+            next: () => {
+            },
+            error: error => reject(error),
+            complete: resolve,
+          },
+      )
+    })
+  } catch (e) {
+    err = e
+  }
+  expect(err).toBeDefined()
+  expect(err.code).toEqual(4400)
+})

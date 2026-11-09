@@ -19,13 +19,14 @@ package io.vertx.ext.web.handler.impl;
 import io.vertx.core.Vertx;
 import io.vertx.core.http.HttpHeaders;
 import io.vertx.core.http.HttpServerResponse;
-import io.vertx.core.impl.logging.Logger;
-import io.vertx.core.impl.logging.LoggerFactory;
+import io.vertx.core.internal.logging.Logger;
+import io.vertx.core.internal.logging.LoggerFactory;
 import io.vertx.core.json.JsonArray;
 import io.vertx.core.json.JsonObject;
 import io.vertx.ext.web.MIMEHeader;
 import io.vertx.ext.web.RoutingContext;
 import io.vertx.ext.web.handler.ErrorHandler;
+import io.vertx.ext.web.impl.Utils;
 
 import java.nio.charset.StandardCharsets;
 import java.util.List;
@@ -74,7 +75,7 @@ public class ErrorHandlerImpl implements ErrorHandler {
       try {
         // force a close of the socket to
         // avoid dangling connections
-        response.close();
+        context.request().connection().close();
       } catch (RuntimeException e) {
         // ignore
       }
@@ -151,7 +152,7 @@ public class ErrorHandlerImpl implements ErrorHandler {
         for (StackTraceElement elem : exception.getStackTrace()) {
           stack
             .append("<li>")
-            .append(escapeHTML(elem.toString()))
+            .append(Utils.escapeHTML(elem.toString()))
             .append("</li>");
         }
       }
@@ -200,33 +201,13 @@ public class ErrorHandlerImpl implements ErrorHandler {
     return false;
   }
 
-  /**
-   * Very incomplete html escape that will escape the most common characters on error messages.
-   * This is to avoid pulling a full dependency to perform a compliant escape. Error messages
-   * are created by developers as such that they should not be to complex for logging.
-   */
-  private static String escapeHTML(String s) {
-    StringBuilder out = new StringBuilder(Math.max(16, s.length()));
-    for (int i = 0; i < s.length(); i++) {
-      char c = s.charAt(i);
-      if (c > 127 || c == '"' || c == '\'' || c == '<' || c == '>' || c == '&') {
-        out.append("&#");
-        out.append((int) c);
-        out.append(';');
-      } else {
-        out.append(c);
-      }
-    }
-    return out.toString();
-  }
-
   private static String htmlFormat(String errorMessage) {
     if (errorMessage == null) {
       return "";
     }
 
     // step #1 (escape html entities)
-    String escaped = escapeHTML(errorMessage);
+    String escaped = Utils.escapeHTML(errorMessage);
     // step #2 (replace line endings with breaks)
     return escaped.replaceAll("\\r?\\n", "<br>");
   }

@@ -15,14 +15,20 @@
  */
 package io.vertx.ext.web.client;
 
+import io.vertx.codegen.annotations.GenIgnore;
 import io.vertx.codegen.annotations.VertxGen;
+import io.vertx.core.Future;
+import io.vertx.core.Handler;
 import io.vertx.core.Vertx;
 import io.vertx.core.buffer.Buffer;
 import io.vertx.core.http.HttpClient;
 import io.vertx.core.http.HttpMethod;
+import io.vertx.core.http.PoolOptions;
 import io.vertx.core.http.RequestOptions;
-import io.vertx.core.http.impl.HttpClientInternal;
+import io.vertx.core.internal.http.HttpClientInternal;
+import io.vertx.core.net.ClientSSLOptions;
 import io.vertx.core.net.SocketAddress;
+import io.vertx.ext.web.client.impl.HttpContext;
 import io.vertx.ext.web.client.impl.WebClientBase;
 import io.vertx.uritemplate.UriTemplate;
 
@@ -58,14 +64,74 @@ public interface WebClient {
   }
 
   /**
-   * Create a web client using the provided {@code vertx} instance.
+   * Create a web client using the provided {@code vertx} instance and default pooling options.
    *
    * @param vertx   the vertx instance
    * @param options the Web Client options
    * @return the created web client
    */
   static WebClient create(Vertx vertx, WebClientOptions options) {
-    return new WebClientBase(vertx.createHttpClient(options), options);
+    return new WebClientBase(vertx.createHttpClient(options), new WebClientConfig(options));
+  }
+
+  /**
+   * Create a web client using the provided {@code vertx} instance.
+   *
+   * @param vertx the vertx instance
+   * @param options the Web Client options
+   * @param poolOptions the HTTP Client pool options
+   * @return the created web client
+   */
+  static WebClient create(Vertx vertx, WebClientOptions options, PoolOptions poolOptions) {
+    return new WebClientBase(vertx.createHttpClient(options, poolOptions), new WebClientConfig(options));
+  }
+
+  /**
+   * Create a web client using the provided {@code vertx} instance and default pooling options.
+   *
+   * @param vertx   the vertx instance
+   * @param config the Web Client config
+   * @return the created web client
+   */
+  static WebClient create(Vertx vertx, WebClientConfig config) {
+    return new WebClientBase(vertx.createHttpClient(config), config);
+  }
+
+  /**
+   * Create a web client using the provided {@code vertx} instance.
+   *
+   * @param vertx the vertx instance
+   * @param config the Web Client config
+   * @param poolOptions the HTTP Client pool options
+   * @return the created web client
+   */
+  static WebClient create(Vertx vertx, WebClientConfig config, PoolOptions poolOptions) {
+    return new WebClientBase(vertx.createHttpClient(config, poolOptions), config);
+  }
+
+  /**
+   * Create a web client using the provided {@code vertx} instance, SSL options and default pooling options.
+   *
+   * @param vertx   the vertx instance
+   * @param sslOptions the SSL options
+   * @param config the Web Client config
+   * @return the created web client
+   */
+  static WebClient create(Vertx vertx, WebClientConfig config, ClientSSLOptions sslOptions) {
+    return new WebClientBase(vertx.createHttpClient(config, sslOptions), config);
+  }
+
+  /**
+   * Create a web client using the provided {@code vertx} instance and SSL options.
+   *
+   * @param vertx the vertx instance
+   * @param config the Web Client config
+   * @param sslOptions the SSL options
+   * @param poolOptions the HTTP Client pool options
+   * @return the created web client
+   */
+  static WebClient create(Vertx vertx, WebClientConfig config, ClientSSLOptions sslOptions, PoolOptions poolOptions) {
+    return new WebClientBase(vertx.createHttpClient(config, sslOptions, poolOptions), config);
   }
 
   /**
@@ -89,9 +155,9 @@ public interface WebClient {
    * @return the web client
    */
   static WebClient wrap(HttpClient httpClient, WebClientOptions options) {
-    WebClientOptions actualOptions = new WebClientOptions(((HttpClientInternal) httpClient).options());
-    actualOptions.init(options);
-    return new WebClientBase(httpClient, actualOptions);
+    WebClientConfig config = new WebClientConfig(((HttpClientInternal) httpClient).config());
+    config.init(options);
+    return new WebClientBase<>(httpClient, config);
   }
 
   /**
@@ -221,11 +287,20 @@ public interface WebClient {
   HttpRequest<Buffer> request(HttpMethod method, SocketAddress serverAddress, UriTemplate requestURI);
 
   /**
+   * Create an HTTP request to send to the server from the specified request {@code options}.
+   * @param options  the request options
+   * @return  an HTTP client request object
+   */
+  HttpRequest<Buffer> request(RequestOptions options);
+
+  /**
    * Create an HTTP request to send to the server at the specified host and port.
    * @param method  the HTTP method
    * @param options  the request options
    * @return  an HTTP client request object
+   * @deprecated instead use {@link #request(RequestOptions)}
    */
+  @Deprecated
   default HttpRequest<Buffer> request(HttpMethod method, RequestOptions options) {
     return request(method, null, options);
   }
@@ -237,7 +312,9 @@ public interface WebClient {
    * The request host header will still be created from the {@code options} parameter.
    * <p>
    * Use {@link SocketAddress#domainSocketAddress(String)} to connect to a unix domain socket server.
+   * @deprecated instead use {@link #request(RequestOptions)}
    */
+  @Deprecated
   HttpRequest<Buffer> request(HttpMethod method, SocketAddress serverAddress, RequestOptions options);
 
   /**
@@ -759,6 +836,129 @@ public interface WebClient {
   default HttpRequest<Buffer> headAbs(UriTemplate absoluteURI) {
     return requestAbs(HttpMethod.HEAD, absoluteURI);
   }
+
+  /**
+   * Create an HTTP QUERY request to send to the server at the default host and port.
+   * @param requestURI the request URI
+   * @return  an HTTP client request object
+   */
+  default HttpRequest<Buffer> query(String requestURI) {
+    return request(HttpMethod.QUERY, requestURI);
+  }
+
+  /**
+   * Create an HTTP QUERY request to send to the server at the default host and port.
+   * @param requestURI the request URI as a {@link UriTemplate}
+   * @return  an HTTP client request object
+   */
+  default HttpRequest<Buffer> query(UriTemplate requestURI) {
+    return request(HttpMethod.QUERY, requestURI);
+  }
+
+  /**
+   * Create an HTTP QUERY request to send to the server at the specified host and port.
+   * @param port  the port
+   * @param host  the host
+   * @param requestURI the request URI
+   * @return  an HTTP client request object
+   */
+  default HttpRequest<Buffer> query(int port, String host, String requestURI) {
+    return request(HttpMethod.QUERY, port, host, requestURI);
+  }
+
+  /**
+   * Create an HTTP QUERY request to send to the server at the specified host and port.
+   * @param port  the port
+   * @param host  the host
+   * @param requestURI the request URI as a {@link UriTemplate}
+   * @return  an HTTP client request object
+   */
+  default HttpRequest<Buffer> query(int port, String host, UriTemplate requestURI) {
+    return request(HttpMethod.QUERY, port, host, requestURI);
+  }
+
+  /**
+   * Create an HTTP QUERY request to send to the server at the specified host and default port.
+   * @param host  the host
+   * @param requestURI the request URI
+   * @return  an HTTP client request object
+   */
+  default HttpRequest<Buffer> query(String host, String requestURI) {
+    return request(HttpMethod.QUERY, host, requestURI);
+  }
+
+  /**
+   * Create an HTTP QUERY request to send to the server at the specified host and default port.
+   * @param host  the host
+   * @param requestURI the request URI as a {@link UriTemplate}
+   * @return  an HTTP client request object
+   */
+  default HttpRequest<Buffer> query(String host, UriTemplate requestURI) {
+    return request(HttpMethod.QUERY, host, requestURI);
+  }
+
+  /**
+   * Create an HTTP QUERY request to send to the server using an absolute URI.
+   * @param absoluteURI  the absolute URI
+   * @return  an HTTP client request object
+   */
+  default HttpRequest<Buffer> queryAbs(String absoluteURI) {
+    return requestAbs(HttpMethod.QUERY, absoluteURI);
+  }
+
+  /**
+   * Create an HTTP QUERY request to send to the server using an absolute URI.
+   * @param absoluteURI the absolute URI as a {@link UriTemplate}
+   * @return  an HTTP client request object
+   */
+  default HttpRequest<Buffer> queryAbs(UriTemplate absoluteURI) {
+    return requestAbs(HttpMethod.QUERY, absoluteURI);
+  }
+
+  /**
+   * Add interceptor in the chain.
+   * <p/>
+   * The interceptor can maintain per request state with {@link HttpContext#get(String)}/{@link HttpContext#set(String, Object)}.
+   * <p/>
+   * A request/response can be processed several times (in case of retry) and thus they should use the per request state
+   * to ensure an operation is not done twice.
+   * <p/>
+   * This API is internal.
+   *
+   * @param interceptor the interceptor to add, must not be null
+   * @return a reference to this, so the API can be used fluently
+   */
+  @GenIgnore
+  WebClient addInterceptor(Handler<HttpContext<?>> interceptor);
+
+  /**
+   * <p>Update the client with new SSL {@code options}, the update happens if the options object is valid and different
+   * from the existing options object.
+   *
+   * <p>The boolean succeeded future result indicates whether the update occurred.
+   *
+   * @param options the new SSL options
+   * @return a future signaling the update success
+   */
+  default Future<Boolean> updateSSLOptions(ClientSSLOptions options) {
+    return updateSSLOptions(options, false);
+  }
+
+  /**
+   * <p>Update the client with new SSL {@code options}, the update happens if the options object is valid and different
+   * from the existing options object.
+   *
+   * <p>The {@code options} object is compared using its {@code equals} method against the existing options to prevent
+   * an update when the objects are equals since loading options can be costly, this can happen for share TCP servers.
+   * When object are equals, setting {@code force} to {@code true} forces the update.
+   *
+   * <p>The boolean succeeded future result indicates whether the update occurred.
+   *
+   * @param options the new SSL options
+   * @param force force the update when options are equals
+   * @return a future signaling the update success
+   */
+  Future<Boolean> updateSSLOptions(ClientSSLOptions options, boolean force);
 
   /**
    * Close the client. Closing will close down any pooled connections.

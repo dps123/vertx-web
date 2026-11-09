@@ -21,6 +21,7 @@ import io.vertx.core.http.HttpHeaders;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.Collections;
+import java.util.Date;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Map;
@@ -42,7 +43,7 @@ public class CacheControl {
   private final String vary;
   private final long maxAge;
 
-  static CacheControl parse(MultiMap headers) {
+  public static CacheControl parse(MultiMap headers) {
     return new CacheControl(headers);
   }
 
@@ -53,13 +54,15 @@ public class CacheControl {
     this.vary = headers.get(HttpHeaders.VARY);
 
     if (headers.contains(HttpHeaders.DATE)) {
-      this.date = DateFormatter.parseHttpDate(headers.get(HttpHeaders.DATE)).toInstant();
+      Date date = DateFormatter.parseHttpDate(headers.get(HttpHeaders.DATE));
+      this.date = date == null ? null : date.toInstant();
     } else {
       this.date = Instant.now();
     }
 
     if (headers.contains(HttpHeaders.EXPIRES)) {
-      this.expires = DateFormatter.parseHttpDate(headers.get(HttpHeaders.EXPIRES)).toInstant();
+      Date expiresDate = DateFormatter.parseHttpDate(headers.get(HttpHeaders.EXPIRES));
+      this.expires = expiresDate == null ? null : expiresDate.toInstant();
     } else {
       this.expires = null;
     }
@@ -115,6 +118,10 @@ public class CacheControl {
     if ("*".equals(vary)) {
       return false;
     }
+    if (noCache()) {
+      // A no-cache response may be stored, but it must be revalidated before each use
+      return true;
+    }
 
     return maxAge > 0;
   }
@@ -145,15 +152,26 @@ public class CacheControl {
     return directives.contains(CacheControlDirective.MUST_REVALIDATE);
   }
 
+  /**
+   * @return true if a shared cache may store this response although the request it answers
+   * contained an {@code Authorization} header (RFC 9111, section 3.5)
+   */
+  public boolean allowsAuthorizedSharedCaching() {
+    return isPublic()
+      || mustRevalidate()
+      || timeDirectives.containsKey(CacheControlDirective.SHARED_MAX_AGE);
+  }
+
   private long computeMaxAge() {
     if (!isPrivate() && timeDirectives.containsKey(CacheControlDirective.SHARED_MAX_AGE)) {
       return timeDirectives.get(CacheControlDirective.SHARED_MAX_AGE);
     } else if (timeDirectives.containsKey(CacheControlDirective.MAX_AGE)) {
       return timeDirectives.get(CacheControlDirective.MAX_AGE);
-    } else if (expires != null) {
+    } else if (date != null && expires != null) {
       return Duration.between(date, expires).getSeconds();
     } else {
-      return Long.MAX_VALUE;
+      // No explicit freshness information (RFC 9111, section 4.2): the response is stale immediately
+      return 0;
     }
   }
 

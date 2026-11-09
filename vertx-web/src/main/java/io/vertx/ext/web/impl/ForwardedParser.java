@@ -20,11 +20,12 @@
 package io.vertx.ext.web.impl;
 
 import io.netty.util.AsciiString;
+import io.netty.util.NetUtil;
 import io.vertx.core.http.HttpServerRequest;
-import io.vertx.core.impl.logging.Logger;
-import io.vertx.core.impl.logging.LoggerFactory;
+import io.vertx.core.internal.logging.Logger;
+import io.vertx.core.internal.logging.LoggerFactory;
+import io.vertx.core.net.HostAndPort;
 import io.vertx.core.net.SocketAddress;
-import io.vertx.core.net.impl.SocketAddressImpl;
 import io.vertx.ext.web.AllowForwardHeaders;
 
 import java.util.regex.Matcher;
@@ -42,14 +43,15 @@ class ForwardedParser {
   private static final AsciiString X_FORWARDED_PORT = AsciiString.cached("X-Forwarded-Port");
   private static final AsciiString X_FORWARDED_FOR = AsciiString.cached("X-Forwarded-For");
 
-  private static final Pattern FORWARDED_HOST_PATTERN = Pattern.compile("host=\"?([^;,\"]+)\"?");
-  private static final Pattern FORWARDED_PROTO_PATTERN = Pattern.compile("proto=\"?([^;,\"]+)\"?");
-  private static final Pattern FORWARDED_FOR_PATTERN = Pattern.compile("for=\"?([^;,\"]+)\"?");
+  private static final Pattern FORWARDED_HOST_PATTERN = Pattern.compile("host=\"?([^;,\"]+)\"?", Pattern.CASE_INSENSITIVE);
+  private static final Pattern FORWARDED_PROTO_PATTERN = Pattern.compile("proto=\"?([^;,\"]+)\"?", Pattern.CASE_INSENSITIVE);
+  private static final Pattern FORWARDED_FOR_PATTERN = Pattern.compile("for=\"?([^;,\"]+)\"?", Pattern.CASE_INSENSITIVE);
 
   private final HttpServerRequest delegate;
   private final AllowForwardHeaders allowForward;
 
   private boolean calculated;
+  private HostAndPort authority;
   private String host;
   private int port = -1;
   private String scheme;
@@ -67,10 +69,11 @@ class ForwardedParser {
     return scheme;
   }
 
-  String host() {
-    if (!calculated)
+  HostAndPort authority() {
+    if (!calculated) {
       calculate();
-    return host;
+    }
+    return authority;
   }
 
   boolean isSSL() {
@@ -101,7 +104,11 @@ class ForwardedParser {
     calculated = true;
     remoteAddress = delegate.remoteAddress();
     scheme = delegate.scheme();
-    setHostAndPort(delegate.host(), port);
+
+    HostAndPort authority = delegate.authority();
+    if (authority != null) {
+      setHostAndPort(authority);
+    }
 
     switch (allowForward) {
       case X_FORWARD:
@@ -123,8 +130,20 @@ class ForwardedParser {
       port = -1;
     }
 
-    host = host + (port >= 0 ? ":" + port : "");
-    absoluteURI = scheme + "://" + host + delegate.uri();
+    if (host != null) {
+      this.authority = HostAndPort.create(host, port);
+      host = host + (port >= 0 ? ":" + port : "");
+
+      String uri = delegate.uri();
+      if (uri.startsWith(scheme) && uri.startsWith("://", scheme.length())) {
+        // URI is already absolute, only append the path and query
+        uri = delegate.path();
+        if (delegate.query() != null) {
+          uri += "?" + delegate.query();
+        }
+      }
+      absoluteURI = scheme + "://" + host + uri;
+    }
   }
 
   private void calculateForward() {
@@ -139,7 +158,7 @@ class ForwardedParser {
 
       matcher = FORWARDED_HOST_PATTERN.matcher(forwardedToUse);
       if (matcher.find()) {
-        setHostAndPort(matcher.group(1).trim(), port);
+        setHostAndPort(HostAndPort.parseAuthority(matcher.group(1).trim(), -1));
       }
 
       matcher = FORWARDED_FOR_PATTERN.matcher(forwardedToUse);
@@ -164,7 +183,7 @@ class ForwardedParser {
 
     String hostHeader = delegate.getHeader(X_FORWARDED_HOST);
     if (hostHeader != null) {
-      setHostAndPort(hostHeader.split(",")[0], port);
+      setHostAndPort(HostAndPort.parseAuthority(hostHeader.split(",")[0], -1));
     }
 
     String portHeader = delegate.getHeader(X_FORWARDED_PORT);
@@ -178,33 +197,33 @@ class ForwardedParser {
     }
   }
 
-  private void setHostAndPort(String hostToParse, int defaultPort) {
-    if (hostToParse == null) {
-      // no header is provided
-      host = null;
-      port = -1;
-    } else {
-      int portSeparatorIdx = hostToParse.lastIndexOf(':');
-      if (portSeparatorIdx > hostToParse.lastIndexOf(']')) {
-        host = hostToParse.substring(0, portSeparatorIdx);
-        port = parsePort(hostToParse.substring(portSeparatorIdx + 1), defaultPort);
-      } else {
-        host = hostToParse;
-        port = -1;
-      }
-    }
+  private void setHostAndPort(HostAndPort authority) {
+    host = authority.host();
+    port = authority.port();
   }
 
   private SocketAddress parseFor(String forToParse, int defaultPort) {
     String host = forToParse;
     int port = defaultPort;
-    int portSeparatorIdx = forToParse.lastIndexOf(':');
-    if (portSeparatorIdx > forToParse.lastIndexOf(']')) {
-      host = forToParse.substring(0, portSeparatorIdx);
-      port = parsePort(forToParse.substring(portSeparatorIdx + 1), defaultPort);
+    if (forToParse.length() > 0 && forToParse.charAt(0) == '[') {
+      int idx = forToParse.lastIndexOf("]");
+      if (idx > 0) {
+        int portSeparatorIdx = forToParse.indexOf(':', idx + 1);
+        if (portSeparatorIdx > 0) {
+          host = forToParse.substring(0, idx + 1);
+          port = parsePort(forToParse.substring(idx + 2), defaultPort);
+        }
+      }
+    } else {
+      if (!NetUtil.isValidIpV6Address(forToParse)) {
+        int portSeparatorIdx = forToParse.lastIndexOf(':');
+        if (portSeparatorIdx > 0) {
+          host = forToParse.substring(0, portSeparatorIdx);
+          port = parsePort(forToParse.substring(portSeparatorIdx + 1), defaultPort);
+        }
+      }
     }
-
-    return new SocketAddressImpl(port, host);
+    return SocketAddress.inetSocketAddress(port, host);
   }
 
 

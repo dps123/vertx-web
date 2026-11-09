@@ -163,6 +163,12 @@ public interface Route {
   Route subRouter(Router subRouter);
 
   /**
+   * @return the sub router if this route acts as a sub router, <code>null</code> if it does not.
+   */
+  @Nullable
+  Router getSubRouter();
+
+  /**
    * Specify a blocking request handler for the route.
    * This method works just like {@link #handler(Handler)} excepted that it will run the blocking handler on a worker thread
    * so that it won't block the event loop. Note that it's safe to call context.next() from the
@@ -213,15 +219,6 @@ public interface Route {
    */
   @Fluent
   Route enable();
-
-  /**
-   * Use {@link #useNormalizedPath(boolean)} instead
-   */
-  @Fluent
-  @Deprecated
-  default Route useNormalisedPath(boolean useNormalizedPath) {
-    return this.useNormalizedPath(useNormalizedPath);
-  }
 
   /**
    * If true then the normalized request path will be used when routing (e.g. removing duplicate /)
@@ -377,5 +374,3 @@ public interface Route {
     });
   }
 }
-
-

@@ -18,23 +18,26 @@ package io.vertx.ext.web.sstore.cookie.impl;
 import io.vertx.codegen.annotations.Nullable;
 import io.vertx.core.Future;
 import io.vertx.core.Vertx;
-import io.vertx.core.impl.ContextInternal;
+import io.vertx.core.internal.ContextInternal;
 import io.vertx.core.json.JsonObject;
-import io.vertx.ext.auth.VertxContextPRNG;
+import io.vertx.ext.auth.prng.VertxContextPRNG;
 import io.vertx.ext.web.Session;
 import io.vertx.ext.web.sstore.SessionStore;
 import io.vertx.ext.web.sstore.cookie.CookieSessionStore;
 
-import javax.crypto.Mac;
 import javax.crypto.spec.SecretKeySpec;
 import java.nio.charset.StandardCharsets;
-import java.security.InvalidKeyException;
+import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
+import java.util.Objects;
 
 /**
  * @author <a href="mailto:plopes@redhat.com">Paulo Lopes</a>
  */
 public class CookieSessionStoreImpl implements CookieSessionStore {
+
+  private static final String SHA_CRYPT = "SHA-256";
+  private static final String AES_ALGORITHM = "AES";
 
   public CookieSessionStoreImpl() {
     // required for the service loader
@@ -44,7 +47,7 @@ public class CookieSessionStoreImpl implements CookieSessionStore {
     init(vertx, new JsonObject().put("secret", secret));
   }
 
-  private Mac mac;
+  private SecretKeySpec aesKey;
   private VertxContextPRNG random;
   private ContextInternal ctx;
 
@@ -54,10 +57,14 @@ public class CookieSessionStoreImpl implements CookieSessionStore {
     this.random = VertxContextPRNG.current(vertx);
     this.ctx = (ContextInternal) vertx.getOrCreateContext();
 
+    Objects.requireNonNull(options.getValue("secret"), "secret must be set");
+
     try {
-      mac = Mac.getInstance("HmacSHA256");
-      mac.init(new SecretKeySpec(options.getString("secret").getBytes(StandardCharsets.UTF_8), "HmacSHA256"));
-    } catch (NoSuchAlgorithmException | InvalidKeyException e) {
+      // AES Key generation
+      MessageDigest sha256 = MessageDigest.getInstance(SHA_CRYPT);
+      byte[] keyBytes = sha256.digest(options.getString("secret").getBytes(StandardCharsets.UTF_8));
+      aesKey = new SecretKeySpec(keyBytes, AES_ALGORITHM);
+    } catch (NoSuchAlgorithmException e) {
       throw new RuntimeException(e);
     }
 
@@ -71,18 +78,18 @@ public class CookieSessionStoreImpl implements CookieSessionStore {
 
   @Override
   public Session createSession(long timeout) {
-    return new CookieSession(mac, random, timeout, DEFAULT_SESSIONID_LENGTH);
+    return new CookieSession(aesKey, random, timeout, DEFAULT_SESSIONID_LENGTH);
   }
 
   @Override
   public Session createSession(long timeout, int length) {
-    return new CookieSession(mac, random, timeout, length);
+    return new CookieSession(aesKey, random, timeout, length);
   }
 
   @Override
   public Future<@Nullable Session> get(String cookieValue) {
     try {
-      Session session = new CookieSession(mac, random).setValue(cookieValue);
+      Session session = new CookieSession(aesKey, random).setValue(cookieValue);
 
       if (session == null) {
         return ctx.succeededFuture();

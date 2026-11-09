@@ -41,7 +41,7 @@ import io.vertx.ext.web.client.spi.CacheStore;
  *      <li>max-age</li>
  *      <li>s-maxage</li>
  *      <li>stale-if-error</li>
- *      <li>staile-while-revalidate</li>
+ *      <li>stale-while-revalidate</li>
  *      <li>must-revalidate</li>
  *    </ul>
  *  </li>
@@ -50,6 +50,10 @@ import io.vertx.ext.web.client.spi.CacheStore;
  *  <li>Vary</li>
  * </ul>
  * <p/>
+ * Caching only applies to requests using the default {@link io.vertx.ext.web.codec.BodyCodec#buffer() buffer}
+ * response codec. A request configured with another body codec (for example via
+ * {@link HttpRequest#as(io.vertx.ext.web.codec.BodyCodec)}) bypasses the cache entirely: its response is
+ * neither stored nor served from the cache, because the raw response body is not available for caching.
  *
  * @author <a href="mailto:craigday3@gmail.com">Craig Day</a>
  */
@@ -101,6 +105,19 @@ public interface CachingWebClient {
    */
   @GenIgnore(GenIgnore.PERMITTED_TYPE)
   static WebClient create(WebClient webClient, CacheStore cacheStore, CachingWebClientOptions options) {
+    return CachingWebClientImpl.wrap(webClient, cacheStore, new CachingWebClientConfig(options));
+  }
+
+  /**
+   * Create a cache aware web client using the provided {@link WebClient}.
+   *
+   * @param webClient  the web client instance
+   * @param cacheStore the cache adapter
+   * @param options    the caching web client options
+   * @return the created web client
+   */
+  @GenIgnore(GenIgnore.PERMITTED_TYPE)
+  static WebClient create(WebClient webClient, CacheStore cacheStore, CachingWebClientConfig options) {
     return CachingWebClientImpl.wrap(webClient, cacheStore, options);
   }
 }

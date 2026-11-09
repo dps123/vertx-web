@@ -12,21 +12,24 @@
  * ******************************************************************************/
 package io.vertx.ext.web.handler.impl;
 
-import java.util.ArrayList;
-import java.util.Collection;
-import java.util.Iterator;
-import java.util.Objects;
-import java.util.function.BiConsumer;
-
-import io.vertx.core.impl.logging.Logger;
-import io.vertx.core.impl.logging.LoggerFactory;
+import io.vertx.core.Future;
+import io.vertx.core.internal.logging.Logger;
+import io.vertx.core.internal.logging.LoggerFactory;
 import io.vertx.ext.auth.User;
+import io.vertx.ext.auth.audit.Marker;
+import io.vertx.ext.auth.audit.SecurityAudit;
 import io.vertx.ext.auth.authorization.Authorization;
 import io.vertx.ext.auth.authorization.AuthorizationContext;
 import io.vertx.ext.auth.authorization.AuthorizationProvider;
+import io.vertx.ext.auth.authorization.PermissionBasedAuthorization;
+import io.vertx.ext.web.Route;
 import io.vertx.ext.web.RoutingContext;
 import io.vertx.ext.web.handler.AuthorizationHandler;
 import io.vertx.ext.web.handler.HttpException;
+import io.vertx.ext.web.impl.RoutingContextInternal;
+
+import java.util.*;
+import java.util.function.BiConsumer;
 
 /**
  * Implementation of the {@link io.vertx.ext.web.handler.AuthorizationHandler}
@@ -49,9 +52,50 @@ public class AuthorizationHandlerImpl implements AuthorizationHandler {
     this.authorizationProviders = new ArrayList<>();
   }
 
+  public AuthorizationHandlerImpl() {
+    this.authorization = null;
+    this.authorizationProviders = new ArrayList<>();
+  }
+
+  private Authorization computeAuthorizationIfNeeded(RoutingContext ctx) {
+    // static (RBAC)
+    if (authorization != null) {
+      return authorization;
+    }
+
+    // dynamic (ABAC)
+    String domain = null;
+    String operation = null;
+    String resource = null;
+
+    // create the authorization from the context
+    final Route route = ctx.currentRoute();
+    if (route != null) {
+      // while it may seem that we are doing a lot of work here, by computing the permission per request
+      // we can't ignore the fact that someone may have reused the handler in several routes, and in that
+      // case the metadata is always different given the location.
+      domain = route.getMetadata("X-ABAC-Domain");
+      operation = route.getMetadata("X-ABAC-Operation");
+      resource = route.getMetadata("X-ABAC-Resource");
+    }
+    // default to web
+    if (domain == null) {
+      domain = "web";
+    }
+
+    if (operation != null && resource != null) {
+      // computed from the metadata
+      return PermissionBasedAuthorization.create(domain + ":" + operation).setResource(resource);
+    }
+
+    // computed from the request
+    return PermissionBasedAuthorization.create(domain + ":" + ctx.request().method().name()).setResource(ctx.normalizedPath());
+  }
+
   @Override
   public void handle(RoutingContext ctx) {
     final User user = ctx.user();
+
     if (user == null) {
       ctx.fail(FORBIDDEN_CODE, FORBIDDEN_EXCEPTION);
     } else {
@@ -61,12 +105,17 @@ public class AuthorizationHandlerImpl implements AuthorizationHandler {
           ctx.request().pause();
         }
         // create the authorization context
-        final AuthorizationContext authorizationContext = AuthorizationContext.create(user);
-        if (variableHandler != null) {
+        final AuthorizationContext authorizationContext;
+        if (variableHandler == null) {
+          // no variable handler, use the request params as source of variables
+          authorizationContext = AuthorizationContext.create(user, ctx.request().params());
+        } else {
+          authorizationContext = AuthorizationContext.create(user);
           variableHandler.accept(ctx, authorizationContext);
         }
+
         // check or fetch authorizations
-        checkOrFetchAuthorizations(ctx, authorizationContext, authorizationProviders.iterator());
+        checkOrFetchAuthorizations(ctx, computeAuthorizationIfNeeded(ctx), authorizationContext, authorizationProviders.iterator());
       } catch (RuntimeException e) {
         // resume as the error handler may allow this request to become valid again
         if (!ctx.request().isEnded()) {
@@ -87,12 +136,18 @@ public class AuthorizationHandlerImpl implements AuthorizationHandler {
    * this method checks that the specified authorization match the current content.
    * It doesn't fetch all providers at once in order to do early-out, but rather tries to be smart and fetch authorizations one provider at a time
    *
-   * @param ctx the current routing context
+   * @param ctx                  the current routing context
    * @param authorizationContext the current authorization context
-   * @param providers the providers iterator
+   * @param providers            the providers iterator
    */
-  private void checkOrFetchAuthorizations(RoutingContext ctx, AuthorizationContext authorizationContext, Iterator<AuthorizationProvider> providers) {
+  private void checkOrFetchAuthorizations(RoutingContext ctx, Authorization authorization, AuthorizationContext authorizationContext, Iterator<AuthorizationProvider> providers) {
+    final User user = ctx.user();
+    final SecurityAudit audit = ((RoutingContextInternal) ctx).securityAudit();
+    audit.authorization(authorization);
+    audit.user(user);
+
     if (authorization.match(authorizationContext)) {
+      audit.audit(Marker.AUTHORIZATION, true);
       if (!ctx.request().isEnded()) {
         ctx.request().resume();
       }
@@ -100,12 +155,11 @@ public class AuthorizationHandlerImpl implements AuthorizationHandler {
       return;
     }
 
-    final User user = ctx.user();
-
     if (user == null || !providers.hasNext()) {
       if (!ctx.request().isEnded()) {
         ctx.request().resume();
       }
+      audit.audit(Marker.AUTHORIZATION, false);
       ctx.fail(FORBIDDEN_CODE, FORBIDDEN_EXCEPTION);
       return;
     }
@@ -116,14 +170,17 @@ public class AuthorizationHandlerImpl implements AuthorizationHandler {
     do {
       AuthorizationProvider provider = providers.next();
       // we haven't fetched authorization from this provider yet
-      if (!user.authorizations().getProviderIds().contains(provider.getId())) {
-        provider.getAuthorizations(ctx.user(), authorizationResult -> {
-          if (authorizationResult.failed()) {
-            LOG.warn("An error occurred getting authorization - providerId: " + provider.getId(), authorizationResult.cause());
-            // note that we don't 'record' the fact that we tried to fetch the authorization provider. therefore, it will be re-fetched later-on
-          }
-          checkOrFetchAuthorizations(ctx, authorizationContext, providers);
-        });
+      if (!user.authorizations().contains(provider.getId())) {
+        provider.getAuthorizations(user)
+          .onFailure(err -> {
+            LOG.warn("An error occurred getting authorization - providerId: " + provider.getId(), err);
+            // note that we don't 'record' the fact that we tried to fetch the authorization provider.
+            // therefore, it will be re-fetched later-on
+          })
+          .eventually(() -> {
+            checkOrFetchAuthorizations(ctx, authorization, authorizationContext, providers);
+            return Future.succeededFuture();
+          });
         // get out right now as the callback will decide what to do next
         return;
       }
@@ -132,6 +189,7 @@ public class AuthorizationHandlerImpl implements AuthorizationHandler {
     if (!ctx.request().isEnded()) {
       ctx.request().resume();
     }
+    audit.audit(Marker.AUTHORIZATION, false);
     ctx.fail(FORBIDDEN_CODE, FORBIDDEN_EXCEPTION);
   }
 

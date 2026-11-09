@@ -36,7 +36,7 @@ import io.vertx.core.*;
 import io.vertx.core.buffer.Buffer;
 import io.vertx.core.eventbus.Message;
 import io.vertx.core.eventbus.MessageConsumer;
-import io.vertx.core.impl.VertxInternal;
+import io.vertx.core.internal.VertxInternal;
 import io.vertx.ext.auth.User;
 import io.vertx.ext.web.RoutingContext;
 import io.vertx.ext.web.Session;
@@ -97,19 +97,11 @@ public abstract class SockJSSocketBase implements SockJSSocket {
 
   @Override
   public Future<Void> end() {
-    Promise<Void> promise = ((VertxInternal) vertx).promise();
     if (registration != null) {
-      registration.unregister(promise);
+      return registration.unregister();
     } else {
-      promise.complete();
+      return ((VertxInternal) vertx).getOrCreateContext().succeededFuture();
     }
-    return promise.future();
-  }
-
-  @Override
-  public void end(Handler<AsyncResult<Void>> handler) {
-    end()
-      .onComplete(handler);
   }
 
   @Override

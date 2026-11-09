@@ -1,12 +1,13 @@
 package io.vertx.ext.web.handler.impl;
 
-import io.vertx.core.AsyncResult;
 import io.vertx.core.Future;
-import io.vertx.core.Handler;
 import io.vertx.ext.auth.User;
+import io.vertx.ext.auth.audit.Marker;
+import io.vertx.ext.auth.audit.SecurityAudit;
 import io.vertx.ext.web.RoutingContext;
 import io.vertx.ext.web.handler.HttpException;
 import io.vertx.ext.web.handler.SimpleAuthenticationHandler;
+import io.vertx.ext.web.impl.RoutingContextInternal;
 
 import java.util.function.Function;
 
@@ -19,19 +20,21 @@ public class SimpleAuthenticationHandlerImpl extends AuthenticationHandlerImpl<N
   }
 
   @Override
-  public void authenticate(RoutingContext ctx, Handler<AsyncResult<User>> handler) {
+  public Future<User> authenticate(RoutingContext ctx) {
     if (authn != null) {
-      authn.apply(ctx)
-        .onFailure(err -> {
+      final SecurityAudit audit = ((RoutingContextInternal) ctx).securityAudit();
+
+      return authn.apply(ctx)
+        .andThen(op -> audit.audit(Marker.AUTHENTICATION, op.succeeded()))
+        .recover(err -> {
           if (err instanceof HttpException) {
-            handler.handle(Future.failedFuture(err));
+            return Future.failedFuture(err);
           } else {
-            handler.handle(Future.failedFuture(new HttpException(401, err)));
+            return Future.failedFuture(new HttpException(401, err));
           }
-        })
-        .onSuccess(user -> handler.handle(Future.succeededFuture(user)));
+        });
     } else {
-      handler.handle(Future.failedFuture("No Authenticate function"));
+      return Future.failedFuture("No Authenticate function");
     }
   }
 

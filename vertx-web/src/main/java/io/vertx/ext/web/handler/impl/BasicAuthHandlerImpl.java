@@ -16,19 +16,19 @@
 
 package io.vertx.ext.web.handler.impl;
 
-import io.vertx.core.AsyncResult;
 import io.vertx.core.Future;
-import io.vertx.core.Handler;
 import io.vertx.ext.auth.User;
+import io.vertx.ext.auth.audit.Marker;
+import io.vertx.ext.auth.audit.SecurityAudit;
 import io.vertx.ext.auth.authentication.AuthenticationProvider;
 import io.vertx.ext.auth.authentication.UsernamePasswordCredentials;
 import io.vertx.ext.web.RoutingContext;
 import io.vertx.ext.web.handler.BasicAuthHandler;
 import io.vertx.ext.web.handler.HttpException;
+import io.vertx.ext.web.impl.RoutingContextInternal;
+import io.vertx.ext.web.impl.Utils;
 
 import java.nio.charset.StandardCharsets;
-
-import static io.vertx.ext.auth.impl.Codec.base64Decode;
 
 /**
  * @author <a href="http://pmlopes@gmail.com">Paulo Lopes</a>
@@ -41,41 +41,37 @@ public class BasicAuthHandlerImpl extends HTTPAuthorizationHandler<Authenticatio
   }
 
   @Override
-  public void authenticate(RoutingContext context, Handler<AsyncResult<User>> handler) {
+  public Future<User> authenticate(RoutingContext context) {
 
-    parseAuthorization(context, parseAuthorization -> {
-      if (parseAuthorization.failed()) {
-        handler.handle(Future.failedFuture(parseAuthorization.cause()));
-        return;
-      }
+    return parseAuthorization(context)
+      .compose(header -> {
 
-      final String suser;
-      final String spass;
+        final String suser;
+        final String spass;
 
-      try {
-        // decode the payload
-        String decoded = new String(base64Decode(parseAuthorization.result()), StandardCharsets.UTF_8);
+        try {
+          // decode the payload
+          String decoded = new String(Utils.base64Decode(header), StandardCharsets.UTF_8);
 
-        int colonIdx = decoded.indexOf(":");
-        if (colonIdx != -1) {
-          suser = decoded.substring(0, colonIdx);
-          spass = decoded.substring(colonIdx + 1);
-        } else {
-          suser = decoded;
-          spass = null;
+          int colonIdx = decoded.indexOf(":");
+          if (colonIdx != -1) {
+            suser = decoded.substring(0, colonIdx);
+            spass = decoded.substring(colonIdx + 1);
+          } else {
+            suser = decoded;
+            spass = null;
+          }
+        } catch (RuntimeException e) {
+          return Future.failedFuture(new HttpException(400, e));
         }
-      } catch (RuntimeException e) {
-        handler.handle(Future.failedFuture(new HttpException(400, e)));
-        return;
-      }
 
-      authProvider.authenticate(new UsernamePasswordCredentials(suser, spass), authn -> {
-        if (authn.failed()) {
-          handler.handle(Future.failedFuture(new HttpException(401, authn.cause())));
-        } else {
-          handler.handle(authn);
-        }
+        final SecurityAudit audit = ((RoutingContextInternal) context).securityAudit();
+        final UsernamePasswordCredentials credentials = new UsernamePasswordCredentials(suser, spass);
+        audit.credentials(credentials);
+
+        return authProvider.authenticate(new UsernamePasswordCredentials(suser, spass))
+          .andThen(result -> audit.audit(Marker.AUTHENTICATION, result.succeeded()))
+          .recover(err -> Future.failedFuture(new HttpException(401, err)));
       });
-    });
   }
 }

@@ -16,21 +16,14 @@
 package io.vertx.ext.web.client;
 
 import io.vertx.codegen.annotations.DataObject;
+import io.vertx.codegen.json.annotations.JsonGen;
 import io.vertx.core.buffer.Buffer;
 import io.vertx.core.http.Http2Settings;
 import io.vertx.core.http.HttpMethod;
 import io.vertx.core.http.HttpVersion;
 import io.vertx.core.json.JsonObject;
-import io.vertx.core.net.JdkSSLEngineOptions;
-import io.vertx.core.net.JksOptions;
-import io.vertx.core.net.KeyCertOptions;
-import io.vertx.core.net.OpenSSLEngineOptions;
-import io.vertx.core.net.PemKeyCertOptions;
-import io.vertx.core.net.PemTrustOptions;
-import io.vertx.core.net.PfxOptions;
-import io.vertx.core.net.ProxyOptions;
-import io.vertx.core.net.SSLEngineOptions;
-import io.vertx.core.net.TrustOptions;
+import io.vertx.core.net.*;
+
 import java.util.Collections;
 import java.util.HashSet;
 import java.util.List;
@@ -40,15 +33,16 @@ import java.util.concurrent.TimeUnit;
 /**
  * @author <a href="mailto:craigday3@gmail.com">Craig Day</a>
  */
-@DataObject(generateConverter = true)
+@DataObject
+@JsonGen(publicConverter = false)
 public class CachingWebClientOptions extends WebClientOptions {
 
-  public static final Set<Integer> DEFAULT_CACHED_STATUS_CODES = buildDefaultStatusCodes();
-  public static final Set<HttpMethod> DEFAULT_CACHED_METHODS = buildDefaultMethods();
+  public static final Set<Integer> DEFAULT_CACHED_STATUS_CODES = Collections.unmodifiableSet(buildDefaultStatusCodes());
+  public static final Set<HttpMethod> DEFAULT_CACHED_METHODS = Collections.unmodifiableSet(buildDefaultMethods());
 
   private boolean enableVaryCaching = false;
-  private Set<Integer> cachedStatusCodes = DEFAULT_CACHED_STATUS_CODES;
-  private Set<HttpMethod> cachedMethods = DEFAULT_CACHED_METHODS;
+  private Set<Integer> cachedStatusCodes = buildDefaultStatusCodes();
+  private Set<HttpMethod> cachedMethods = buildDefaultMethods();
 
   public CachingWebClientOptions() {
   }
@@ -69,8 +63,8 @@ public class CachingWebClientOptions extends WebClientOptions {
   void init(CachingWebClientOptions other) {
     super.init(other);
     this.enableVaryCaching = other.enableVaryCaching;
-    this.cachedStatusCodes = other.cachedStatusCodes;
-    this.cachedMethods = other.cachedMethods;
+    this.cachedStatusCodes = new HashSet<>(other.cachedStatusCodes);
+    this.cachedMethods = new HashSet<>(other.cachedMethods);
   }
 
   /**
@@ -258,38 +252,8 @@ public class CachingWebClientOptions extends WebClientOptions {
   }
 
   @Override
-  public CachingWebClientOptions setKeyStoreOptions(JksOptions options) {
-    return (CachingWebClientOptions) super.setKeyStoreOptions(options);
-  }
-
-  @Override
-  public CachingWebClientOptions setPfxKeyCertOptions(PfxOptions options) {
-    return (CachingWebClientOptions) super.setPfxKeyCertOptions(options);
-  }
-
-  @Override
   public CachingWebClientOptions setTrustOptions(TrustOptions options) {
     return (CachingWebClientOptions) super.setTrustOptions(options);
-  }
-
-  @Override
-  public CachingWebClientOptions setPemKeyCertOptions(PemKeyCertOptions options) {
-    return (CachingWebClientOptions) super.setPemKeyCertOptions(options);
-  }
-
-  @Override
-  public CachingWebClientOptions setTrustStoreOptions(JksOptions options) {
-    return (CachingWebClientOptions) super.setTrustStoreOptions(options);
-  }
-
-  @Override
-  public CachingWebClientOptions setPfxTrustOptions(PfxOptions options) {
-    return (CachingWebClientOptions) super.setPfxTrustOptions(options);
-  }
-
-  @Override
-  public CachingWebClientOptions setPemTrustOptions(PemTrustOptions options) {
-    return (CachingWebClientOptions) super.setPemTrustOptions(options);
   }
 
   @Override
@@ -318,18 +282,8 @@ public class CachingWebClientOptions extends WebClientOptions {
   }
 
   @Override
-  public CachingWebClientOptions setMaxPoolSize(int maxPoolSize) {
-    return (CachingWebClientOptions) super.setMaxPoolSize(maxPoolSize);
-  }
-
-  @Override
   public CachingWebClientOptions setHttp2MultiplexingLimit(int limit) {
     return (CachingWebClientOptions) super.setHttp2MultiplexingLimit(limit);
-  }
-
-  @Override
-  public CachingWebClientOptions setHttp2MaxPoolSize(int max) {
-    return (CachingWebClientOptions) super.setHttp2MaxPoolSize(max);
   }
 
   @Override
@@ -358,18 +312,8 @@ public class CachingWebClientOptions extends WebClientOptions {
   }
 
   @Override
-  public CachingWebClientOptions setTryUseCompression(boolean tryUseCompression) {
-    return (CachingWebClientOptions) super.setTryUseCompression(tryUseCompression);
-  }
-
-  @Override
-  public CachingWebClientOptions setSendUnmaskedFrames(boolean sendUnmaskedFrames) {
-    return (CachingWebClientOptions) super.setSendUnmaskedFrames(sendUnmaskedFrames);
-  }
-
-  @Override
-  public CachingWebClientOptions setMaxWebSocketFrameSize(int maxWebsocketFrameSize) {
-    return (CachingWebClientOptions) super.setMaxWebSocketFrameSize(maxWebsocketFrameSize);
+  public CachingWebClientOptions setDecompressionSupported(boolean tryUseCompression) {
+    return (CachingWebClientOptions) super.setDecompressionSupported(tryUseCompression);
   }
 
   @Override
@@ -398,11 +342,6 @@ public class CachingWebClientOptions extends WebClientOptions {
   }
 
   @Override
-  public CachingWebClientOptions setMaxWaitQueueSize(int maxWaitQueueSize) {
-    return (CachingWebClientOptions) super.setMaxWaitQueueSize(maxWaitQueueSize);
-  }
-
-  @Override
   public CachingWebClientOptions setUseAlpn(boolean useAlpn) {
     return (CachingWebClientOptions) super.setUseAlpn(useAlpn);
   }
@@ -410,16 +349,6 @@ public class CachingWebClientOptions extends WebClientOptions {
   @Override
   public CachingWebClientOptions setSslEngineOptions(SSLEngineOptions sslEngineOptions) {
     return (CachingWebClientOptions) super.setSslEngineOptions(sslEngineOptions);
-  }
-
-  @Override
-  public CachingWebClientOptions setJdkSslEngineOptions(JdkSSLEngineOptions sslEngineOptions) {
-    return (CachingWebClientOptions) super.setJdkSslEngineOptions(sslEngineOptions);
-  }
-
-  @Override
-  public CachingWebClientOptions setOpenSslEngineOptions(OpenSSLEngineOptions sslEngineOptions) {
-    return (CachingWebClientOptions) super.setOpenSslEngineOptions(sslEngineOptions);
   }
 
   @Override
@@ -503,18 +432,8 @@ public class CachingWebClientOptions extends WebClientOptions {
   }
 
   @Override
-  public CachingWebClientOptions setPoolCleanerPeriod(int poolCleanerPeriod) {
-    return (CachingWebClientOptions) super.setPoolCleanerPeriod(poolCleanerPeriod);
-  }
-
-  @Override
   public CachingWebClientOptions setKeepAliveTimeout(int keepAliveTimeout) {
     return (CachingWebClientOptions) super.setKeepAliveTimeout(keepAliveTimeout);
-  }
-
-  @Override
-  public CachingWebClientOptions setMaxWebSocketMessageSize(int maxWebsocketMessageSize) {
-    return (CachingWebClientOptions) super.setMaxWebSocketMessageSize(maxWebsocketMessageSize);
   }
 
   @Override
@@ -535,31 +454,6 @@ public class CachingWebClientOptions extends WebClientOptions {
   @Override
   public CachingWebClientOptions setSslHandshakeTimeoutUnit(TimeUnit sslHandshakeTimeoutUnit) {
     return (CachingWebClientOptions) super.setSslHandshakeTimeoutUnit(sslHandshakeTimeoutUnit);
-  }
-
-  @Override
-  public CachingWebClientOptions setTryUsePerFrameWebSocketCompression(boolean offer) {
-    return (CachingWebClientOptions) super.setTryUsePerFrameWebSocketCompression(offer);
-  }
-
-  @Override
-  public CachingWebClientOptions setTryUsePerMessageWebSocketCompression(boolean offer) {
-    return (CachingWebClientOptions) super.setTryUsePerMessageWebSocketCompression(offer);
-  }
-
-  @Override
-  public CachingWebClientOptions setWebSocketCompressionLevel(int compressionLevel) {
-    return (CachingWebClientOptions) super.setWebSocketCompressionLevel(compressionLevel);
-  }
-
-  @Override
-  public CachingWebClientOptions setWebSocketCompressionAllowClientNoContext(boolean offer) {
-    return (CachingWebClientOptions) super.setWebSocketCompressionAllowClientNoContext(offer);
-  }
-
-  @Override
-  public CachingWebClientOptions setWebSocketCompressionRequestServerNoContext(boolean offer) {
-    return (CachingWebClientOptions) super.setWebSocketCompressionRequestServerNoContext(offer);
   }
 
   private static Set<Integer> buildDefaultStatusCodes() {

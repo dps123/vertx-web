@@ -111,11 +111,15 @@ public class CachedHttpResponse {
   }
 
   public HttpResponse<Buffer> rehydrate() {
+    return rehydrate(responseHeaders);
+  }
+
+  public HttpResponse<Buffer> rehydrate(MultiMap headers) {
     return new HttpResponseImpl<>(
       HttpVersion.valueOf(version),
       statusCode,
       statusMessage,
-      responseHeaders,
+      headers,
       MultiMap.caseInsensitiveMultiMap(),
       Collections.emptyList(),
       body,
@@ -124,6 +128,12 @@ public class CachedHttpResponse {
   }
 
   private boolean useStale(CacheControlDirective directive) {
+    if (cacheControl.mustRevalidate()) {
+      // must-revalidate forbids using a stale response without successful validation
+      // (RFC 9111, section 5.2.2.2)
+      return false;
+    }
+
     long secondsStale = Math.max(0L, age() - getCacheControl().getMaxAge());
 
     long maxSecondsStale = getCacheControl()

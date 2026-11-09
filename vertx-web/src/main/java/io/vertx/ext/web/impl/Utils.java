@@ -20,12 +20,20 @@ import io.vertx.core.MultiMap;
 import io.vertx.core.http.HttpHeaders;
 import io.vertx.core.http.HttpServerRequest;
 import io.vertx.core.http.HttpServerResponse;
+import io.vertx.core.internal.net.RFC3986;
 import io.vertx.ext.web.Route;
 import io.vertx.ext.web.RoutingContext;
 
-import java.time.*;
+import java.io.ByteArrayOutputStream;
+import java.nio.charset.StandardCharsets;
+import java.time.Instant;
+import java.time.LocalDateTime;
+import java.time.ZoneId;
+import java.time.ZoneOffset;
 import java.time.format.DateTimeFormatter;
 import java.time.format.DateTimeParseException;
+import java.util.Base64;
+import java.util.Locale;
 import java.util.regex.Pattern;
 
 
@@ -34,6 +42,17 @@ import java.util.regex.Pattern;
  * @author <a href="http://pmlopes@gmail.com">Paulo Lopes</a>
  */
 public class Utils {
+
+  private static final Base64.Encoder BASE64_URL_ENCODER = Base64.getUrlEncoder().withoutPadding();
+  private static final Base64.Decoder BASE64_DECODER = Base64.getDecoder();
+
+  public static String base64UrlEncode(byte[] bytes) {
+    return BASE64_URL_ENCODER.encodeToString(bytes);
+  }
+
+  public static byte[] base64Decode(String base64) {
+    return BASE64_DECODER.decode(base64);
+  }
 
   public static ClassLoader getClassLoader() {
     // try current thread
@@ -55,6 +74,12 @@ public class Utils {
     return DateTimeFormatter.RFC_1123_DATE_TIME.format(Instant.ofEpochMilli(time).atZone(ZONE_GMT));
   }
 
+  private static final DateTimeFormatter STRFTIME = DateTimeFormatter.ofPattern("dd/MMM/yyyy:HH:mm:ss Z").withLocale(Locale.US);
+
+  public static String formatStrftimeDateTime(final long time) {
+    return STRFTIME.format(Instant.ofEpochMilli(time).atZone(ZoneId.systemDefault()));
+  }
+
   public static long parseRFC1123DateTime(final String header) {
     try {
       return header == null || header.isEmpty() ? -1 :
@@ -73,10 +98,12 @@ public class Utils {
     }
 
     if (!route.isExactPath()) {
-      final String rest = context.pathParam("*");
+      String rest = context.pathParam("*");
       if (rest != null) {
         // normalize
         if (rest.length() > 0) {
+          // remove any attempt to escape the web root and use UNIX style path separators
+          rest = RFC3986.removeDotSegments(rest.replace('\\', '/'));
           if (rest.charAt(0) == '/') {
             return rest;
           } else {
@@ -229,25 +256,67 @@ public class Utils {
     return true;
   }
 
-  public static boolean canUpgradeToWebsocket(HttpServerRequest req) {
-    // verify if we can upgrade
-    // 1. Connection header contains "Upgrade"
-    // 2. Upgrade header is "websocket"
-    final MultiMap headers = req.headers();
-    if (headers.contains(HttpHeaders.CONNECTION)) {
-      for (String connection : headers.getAll(HttpHeaders.CONNECTION)) {
-        if (connection.toLowerCase().contains(HttpHeaders.UPGRADE)) {
-          if (headers.contains(HttpHeaders.UPGRADE)) {
-            for (String upgrade : headers.getAll(HttpHeaders.UPGRADE)) {
-              if (upgrade.toLowerCase().contains(HttpHeaders.WEBSOCKET)) {
-                return true;
-              }
-            }
-          }
-        }
+  /**
+   * Very incomplete html escape that will escape the most common characters on error messages.
+   * This is to avoid pulling a full dependency to perform a compliant escape. Error messages
+   * are created by developers as such that they should not be to complex for logging.
+   */
+  public static String escapeHTML(String s) {
+    StringBuilder out = new StringBuilder(Math.max(16, s.length()));
+    for (int i = 0; i < s.length(); i++) {
+      char c = s.charAt(i);
+      if (c > 127 || c == '"' || c == '\'' || c == '<' || c == '>' || c == '&') {
+        out.append("&#");
+        out.append((int) c);
+        out.append(';');
+      } else {
+        out.append(c);
       }
     }
+    return out.toString();
+  }
 
-    return false;
+  /**
+   * Encode the given URI path by replacing special characters as defined by RFC3986.
+   * Adapted from Spring <a href="https://github.com/spring-projects/spring-framework/blob/16edf9867a143f95cefadb7b2115dcbbf624e176/spring-web/src/main/java/org/springframework/web/util/UriUtils.java#L179">UriUtils</a> code.
+   */
+  public static String encodeUriPath(String path) {
+    byte[] bytes = path.getBytes(StandardCharsets.UTF_8);
+    boolean needsReplacement = false;
+    for (byte b : bytes) {
+      if (isAllowedForPath(b)) {
+        needsReplacement = true;
+        break;
+      }
+    }
+    if (!needsReplacement) {
+      return path;
+    }
+    return replaceCharactersForUriPath(bytes);
+  }
+
+  private static String replaceCharactersForUriPath(byte[] bytes) {
+    // Create a buffer at least twice as big as the original byte array length.
+    // BAOS would double the buffer size the first time the min capacity is bigger than the current length anyway.
+    ByteArrayOutputStream baos = new ByteArrayOutputStream(2 * bytes.length);
+    for (byte b : bytes) {
+      if (isAllowedForPath(b)) {
+        baos.write(b);
+      } else {
+        baos.write('%');
+        baos.write(Character.toUpperCase(Character.forDigit((b >> 4) & 0xF, 16)));
+        baos.write(Character.toUpperCase(Character.forDigit(b & 0xF, 16)));
+      }
+    }
+    return baos.toString(StandardCharsets.UTF_8);
+  }
+
+  private static boolean isAllowedForPath(byte c) {
+    return (c >= 'a' && c <= 'z')
+      || (c >= 'A' && c <= 'Z')
+      || (c >= '0' && c <= '9')
+      || '-' == c || '.' == c || '_' == c || '~' == c || '!' == c || '$' == c || '&' == c || '\'' == c
+      || '(' == c || ')' == c || '*' == c || '+' == c || ',' == c || ';' == c || '=' == c || ':' == c
+      || '@' == c || '/' == c;
   }
 }

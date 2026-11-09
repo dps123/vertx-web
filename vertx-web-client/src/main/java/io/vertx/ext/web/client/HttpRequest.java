@@ -18,6 +18,7 @@ package io.vertx.ext.web.client;
 import io.vertx.codegen.annotations.*;
 import io.vertx.core.*;
 import io.vertx.core.buffer.Buffer;
+import io.vertx.core.http.HttpClientOptions;
 import io.vertx.core.http.HttpMethod;
 import io.vertx.core.json.JsonObject;
 import io.vertx.core.net.ProxyOptions;
@@ -25,16 +26,14 @@ import io.vertx.core.streams.ReadStream;
 import io.vertx.ext.auth.authentication.Credentials;
 import io.vertx.ext.auth.authentication.TokenCredentials;
 import io.vertx.ext.auth.authentication.UsernamePasswordCredentials;
-import io.vertx.ext.web.client.predicate.ResponsePredicate;
-import io.vertx.ext.web.client.predicate.ResponsePredicateResult;
 import io.vertx.ext.web.codec.BodyCodec;
 import io.vertx.ext.web.multipart.MultipartForm;
 import io.vertx.uritemplate.Variables;
 import io.vertx.uritemplate.UriTemplate;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
-import java.util.function.Function;
 
 /**
  * A client-side HTTP request.
@@ -47,10 +46,10 @@ import java.util.function.Function;
  * <p>
  * After the request has been configured, the methods
  * <ul>
- *   <li>{@link #send(Handler)}</li>
- *   <li>{@link #sendStream(ReadStream, Handler)}</li>
- *   <li>{@link #sendJson(Object, Handler)} ()}</li>
- *   <li>{@link #sendForm(MultiMap, Handler)}</li>
+ *   <li>{@link #send()}</li>
+ *   <li>{@link #sendStream(ReadStream)}</li>
+ *   <li>{@link #sendJson(Object)} ()}</li>
+ *   <li>{@link #sendForm(MultiMap)}</li>
  * </ul>
  * can be called.
  * The {@code sendXXX} methods perform the actual request, they can be called multiple times to perform the same HTTP
@@ -160,7 +159,8 @@ public interface HttpRequest<T> {
   HttpRequest<T> uri(String value);
 
   /**
-   * @return the request uri or {@code null} when none is set for absolute URI templates
+   * @return the request uri or {@code null} when none is set for absolute URI templates, when the request
+   * uri is a template, the template is extrapolated tolerating missing variables.
    */
   String uri();
 
@@ -184,6 +184,21 @@ public interface HttpRequest<T> {
   HttpRequest<T> putHeader(String name, String value);
 
   /**
+   * Configure the request to set a new HTTP header using {@link CharSequence}.
+   * <p>
+   * This is an overload of {@link #putHeader(String, String)} that accepts {@link CharSequence} parameters.
+   *
+   * @param name  the header name
+   * @param value the header value
+   * @return a reference to this, so the API can be used fluently
+   */
+  @Fluent
+  @GenIgnore(GenIgnore.PERMITTED_TYPE)
+  default HttpRequest<T> putHeader(CharSequence name, CharSequence value) {
+    return putHeader(name.toString(), value.toString());
+  }
+
+  /**
    * Configure the request to set a new HTTP header with multiple values.
    *
    * @param name  the header name
@@ -193,6 +208,25 @@ public interface HttpRequest<T> {
   @Fluent
   @GenIgnore(GenIgnore.PERMITTED_TYPE)
   HttpRequest<T> putHeader(String name, Iterable<String> value);
+
+  /**
+   * Configure the request to set a new HTTP header with multiple values using {@link CharSequence}.
+   * <p>
+   * This is an overload of {@link #putHeader(String, Iterable)} that accepts {@link CharSequence} parameters.
+   *
+   * @param name   the header name
+   * @param values the header values
+   * @return a reference to this, so the API can be used fluently
+   */
+  @Fluent
+  @GenIgnore(GenIgnore.PERMITTED_TYPE)
+  default HttpRequest<T> putHeader(CharSequence name, Iterable<CharSequence> values) {
+    List<String> stringValues = new ArrayList<>();
+    for (CharSequence cs : values) {
+      stringValues.add(cs.toString());
+    }
+    return putHeader(name.toString(), stringValues);
+  }
 
   /**
    * @return The HTTP headers
@@ -296,6 +330,42 @@ public interface HttpRequest<T> {
   long timeout();
 
   /**
+   * Sets the amount of time after which, if the request does not return any data within the timeout period,
+   * the request/response is closed and the related futures are failed with a {@link java.util.concurrent.TimeoutException}.
+   *
+   * <p/>The timeout starts after a connection is obtained from the client.
+   *
+   * @param timeout the amount of time in milliseconds.
+   * @return a reference to this, so the API can be used fluently
+   */
+  @Fluent
+  HttpRequest<T> idleTimeout(long timeout);
+
+  /**
+   * @return the idle timeout
+   */
+  long idleTimeout();
+
+  /**
+   * Sets the amount of time after which, if the request is not obtained from the client within the timeout period,
+   * the response is failed with a {@link java.util.concurrent.TimeoutException}.
+   *
+   * Note this is not related to the TCP {@link HttpClientOptions#setConnectTimeout(int)} option, when a request is made against
+   * a pooled HTTP client, the timeout applies to the duration to obtain a connection from the pool to serve the request, the timeout
+   * might fire because the server does not respond in time or the pool is too busy to serve a request.
+   *
+   * @param timeout the amount of time in milliseconds.
+   * @return a reference to this, so the API can be used fluently
+   */
+  @Fluent
+  HttpRequest<T> connectTimeout(long timeout);
+
+  /**
+   * @return the connect timeout
+   */
+  long connectTimeout();
+
+  /**
    * Add a query parameter to the request.
    *
    * @param paramName  the param name
@@ -360,6 +430,24 @@ public interface HttpRequest<T> {
   boolean followRedirects();
 
   /**
+   * Set the routing key, the routing key can be used by a Vert.x client side sticky load balancer
+   * to pin the request to a remote HTTP server.
+   *
+   * @param key the routing key
+   * @return  a reference to this, so the API can be used fluently
+   */
+  @Fluent
+  HttpRequest<T> routingKey(String key);
+
+  /**
+   * Return the routing key, the routing key can be used by a Vert.x client side sticky load balancer to
+   * pin the request to a remote HTTP server.
+   *
+   * @return the routing key
+   */
+  String routingKey();
+
+  /**
    * Configure the request to set a proxy for this request.
    *
    * Setting proxy here supersedes the proxy set on the client itself
@@ -374,35 +462,6 @@ public interface HttpRequest<T> {
    * @return the proxy for this request
    */
   ProxyOptions proxy();
-
-  /**
-   * Add an expectation that the response is valid according to the provided {@code predicate}.
-   * <p>
-   * Multiple predicates can be added.
-   *
-   * @param predicate the predicate
-   * @return a reference to this, so the API can be used fluently
-   */
-  @Fluent
-  default HttpRequest<T> expect(Function<HttpResponse<Void>, ResponsePredicateResult> predicate) {
-    return expect(predicate::apply);
-  }
-
-  /**
-   * Add an expectation that the response is valid according to the provided {@code predicate}.
-   * <p>
-   * Multiple predicates can be added.
-   *
-   * @param predicate the predicate
-   * @return a reference to this, so the API can be used fluently
-   */
-  @Fluent
-  HttpRequest<T> expect(ResponsePredicate predicate);
-
-  /**
-   * @return a read-only list of the response predicate expectations
-   */
-  List<ResponsePredicate> expectations();
 
   /**
    * Return the current query parameters.
@@ -459,97 +518,52 @@ public interface HttpRequest<T> {
   String traceOperation();
 
   /**
-   * Like {@link #send(Handler)} but with an HTTP request {@code body} stream.
+   * Like {@link #send()} but with an HTTP request {@code body} stream.
    *
    * @param body the body
+   * @see HttpRequest#sendStream(ReadStream)
    */
-  void sendStream(ReadStream<Buffer> body, Handler<AsyncResult<HttpResponse<T>>> handler);
+  Future<HttpResponse<T>> sendStream(ReadStream<Buffer> body);
 
   /**
-   * @param body the body
-   * @see HttpRequest#sendStream(ReadStream, Handler)
-   */
-  default Future<HttpResponse<T>> sendStream(ReadStream<Buffer> body) {
-    Promise<HttpResponse<T>> promise = Promise.promise();
-    sendStream(body, promise);
-    return promise.future();
-  }
-
-  /**
-   * Like {@link #send(Handler)} but with an HTTP request {@code body} buffer.
+   * Like {@link #send()} but with an HTTP request {@code body} buffer.
    *
    * @param body the body
+   * @see HttpRequest#sendBuffer(Buffer)
    */
-  void sendBuffer(Buffer body, Handler<AsyncResult<HttpResponse<T>>> handler);
+  Future<HttpResponse<T>> sendBuffer(Buffer body);
 
   /**
-   * @param body the body
-   * @see HttpRequest#sendBuffer(Buffer, Handler)
-   */
-  default Future<HttpResponse<T>> sendBuffer(Buffer body) {
-    Promise<HttpResponse<T>> promise = Promise.promise();
-    sendBuffer(body, promise);
-    return promise.future();
-  }
-
-  /**
-   * Like {@link #send(Handler)} but with an HTTP request {@code body} object encoded as json and the content type
+   * Like {@link #send()} but with an HTTP request {@code body} object encoded as json and the content type
    * set to {@code application/json}.
    *
    * @param body the body
+   * @see HttpRequest#sendJsonObject(JsonObject)
    */
-  void sendJsonObject(JsonObject body, Handler<AsyncResult<HttpResponse<T>>> handler);
+  Future<HttpResponse<T>> sendJsonObject(JsonObject body);
 
   /**
-   * @param body the body
-   * @see HttpRequest#sendJsonObject(JsonObject, Handler)
-   */
-  default Future<HttpResponse<T>> sendJsonObject(JsonObject body) {
-    Promise<HttpResponse<T>> promise = Promise.promise();
-    sendJsonObject(body, promise);
-    return promise.future();
-  }
-
-  /**
-   * Like {@link #send(Handler)} but with an HTTP request {@code body} object encoded as json and the content type
+   * Like {@link #send()} but with an HTTP request {@code body} object encoded as json and the content type
    * set to {@code application/json}.
    *
    * @param body the body
+   * @see HttpRequest#sendJson(Object)
    */
-  void sendJson(@Nullable Object body, Handler<AsyncResult<HttpResponse<T>>> handler);
+  Future<HttpResponse<T>> sendJson(@Nullable Object body);
 
   /**
-   * @param body the body
-   * @see HttpRequest#sendJson(Object, Handler)
-   */
-  default Future<HttpResponse<T>> sendJson(@Nullable Object body) {
-    Promise<HttpResponse<T>> promise = Promise.promise();
-    sendJson(body, promise);
-    return promise.future();
-  }
-
-  /**
-   * Like {@link #send(Handler)} but with an HTTP request {@code body} multimap encoded as form and the content type
+   * Like {@link #send()} but with an HTTP request {@code body} multimap encoded as form and the content type
    * set to {@code application/x-www-form-urlencoded}.
    * <p>
    * When the content type header is previously set to {@code multipart/form-data} it will be used instead.
    *
    * @param body the body
+   * @see HttpRequest#sendForm(MultiMap)
    */
-  void sendForm(MultiMap body, Handler<AsyncResult<HttpResponse<T>>> handler);
+  Future<HttpResponse<T>> sendForm(MultiMap body);
 
   /**
-   * @param body the body
-   * @see HttpRequest#sendForm(MultiMap, Handler)
-   */
-  default Future<HttpResponse<T>> sendForm(MultiMap body) {
-    Promise<HttpResponse<T>> promise = Promise.promise();
-    sendForm(body, promise);
-    return promise.future();
-  }
-
-  /**
-   * Like {@link #send(Handler)} but with an HTTP request {@code body} multimap encoded as form and the content type
+   * Like {@link #send()} but with an HTTP request {@code body} multimap encoded as form and the content type
    * set to {@code application/x-www-form-urlencoded}.
    * <p>
    * When the content type header is previously set to {@code multipart/form-data} it will be used instead.
@@ -558,49 +572,24 @@ public interface HttpRequest<T> {
    * encoded form since the charset to use must be UTF-8.
    *
    * @param body the body
-   */
-  void sendForm(MultiMap body, String charset, Handler<AsyncResult<HttpResponse<T>>> handler);
-
-  /**
-   * @param body the body
    * @param charset the charset
-   * @see HttpRequest#sendForm(MultiMap, String, Handler)
+   * @see HttpRequest#sendForm(MultiMap, String)
    */
-  default Future<HttpResponse<T>> sendForm(MultiMap body, String charset) {
-    Promise<HttpResponse<T>> promise = Promise.promise();
-    sendForm(body, charset, promise);
-    return promise.future();
-  }
+  Future<HttpResponse<T>> sendForm(MultiMap body, String charset);
 
   /**
-   * Like {@link #send(Handler)} but with an HTTP request {@code body} multimap encoded as form and the content type
+   * Like {@link #send()} but with an HTTP request {@code body} multimap encoded as form and the content type
    * set to {@code multipart/form-data}. You may use this method to send attributes and upload files.
    *
    * @param body the body
+   * @see HttpRequest#sendMultipartForm(MultipartForm)
    */
-  void sendMultipartForm(MultipartForm body, Handler<AsyncResult<HttpResponse<T>>> handler);
-
-  /**
-   * @param body the body
-   * @see HttpRequest#sendMultipartForm(MultipartForm, Handler)
-   */
-  default Future<HttpResponse<T>> sendMultipartForm(MultipartForm body) {
-    Promise<HttpResponse<T>> promise = Promise.promise();
-    sendMultipartForm(body, promise);
-    return promise.future();
-  }
+  Future<HttpResponse<T>> sendMultipartForm(MultipartForm body);
 
   /**
    * Send a request, the {@code handler} will receive the response as an {@link HttpResponse}.
+   *
+   * @see HttpRequest#send()
    */
-  void send(Handler<AsyncResult<HttpResponse<T>>> handler);
-
-  /**
-   * @see HttpRequest#send(Handler)
-   */
-  default Future<HttpResponse<T>> send() {
-    Promise<HttpResponse<T>> promise = Promise.promise();
-    send(promise);
-    return promise.future();
-  }
+  Future<HttpResponse<T>> send();
 }

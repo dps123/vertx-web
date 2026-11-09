@@ -15,17 +15,20 @@
  */
 package io.vertx.ext.web.handler.impl;
 
-import io.vertx.core.AsyncResult;
 import io.vertx.core.Future;
-import io.vertx.core.Handler;
 import io.vertx.core.MultiMap;
 import io.vertx.core.http.Cookie;
 import io.vertx.ext.auth.User;
+import io.vertx.ext.auth.audit.Marker;
+import io.vertx.ext.auth.audit.SecurityAudit;
 import io.vertx.ext.auth.authentication.AuthenticationProvider;
 import io.vertx.ext.auth.authentication.TokenCredentials;
 import io.vertx.ext.web.RoutingContext;
 import io.vertx.ext.web.handler.APIKeyHandler;
 import io.vertx.ext.web.handler.HttpException;
+import io.vertx.ext.web.impl.RoutingContextInternal;
+
+import java.util.function.Function;
 
 /**
  * @author <a href="mailto:pmlopes@gmail.com">Paulo Lopes</a>
@@ -40,6 +43,7 @@ public class APIKeyHandlerImpl extends AuthenticationHandlerImpl<AuthenticationP
 
   private Type source = Type.HEADER;
   private String value = "X-API-KEY";
+  private Function<String, Future<String>> tokenExtractor = null;
 
   public APIKeyHandlerImpl(AuthenticationProvider authProvider) {
     super(authProvider);
@@ -77,48 +81,62 @@ public class APIKeyHandlerImpl extends AuthenticationHandlerImpl<AuthenticationP
   }
 
   @Override
-  public void authenticate(RoutingContext context, Handler<AsyncResult<User>> handler) {
+  public Future<User> authenticate(RoutingContext context) {
+    final SecurityAudit audit = ((RoutingContextInternal) context).securityAudit();
+    final String token;
+
     switch (source) {
       case HEADER:
         MultiMap headers = context.request().headers();
         if (headers != null && headers.contains(value)) {
-          authProvider.authenticate(new TokenCredentials(headers.get(value)), authn -> {
-            if (authn.failed()) {
-              handler.handle(Future.failedFuture(new HttpException(401, authn.cause())));
-            } else {
-              handler.handle(authn);
-            }
-          });
-          return;
+          token = headers.get(value);
+        } else {
+          return Future.failedFuture(UNAUTHORIZED);
         }
         break;
       case PARAMETER:
         MultiMap params = context.request().params();
         if (params != null && params.contains(value)) {
-          authProvider.authenticate(new TokenCredentials(params.get(value)), authn -> {
-            if (authn.failed()) {
-              handler.handle(Future.failedFuture(new HttpException(401, authn.cause())));
-            } else {
-              handler.handle(authn);
-            }
-          });
-          return;
+          token = params.get(value);
+        } else {
+          return Future.failedFuture(UNAUTHORIZED);
         }
         break;
       case COOKIE:
         Cookie cookie = context.request().getCookie(value);
         if (cookie != null) {
-          authProvider.authenticate(new TokenCredentials(cookie.getValue()), authn -> {
-            if (authn.failed()) {
-              handler.handle(Future.failedFuture(new HttpException(401, authn.cause())));
-            } else {
-              handler.handle(authn);
-            }
-          });
-          return;
+          token = cookie.getValue();
+        } else {
+          return Future.failedFuture(UNAUTHORIZED);
         }
+        break;
+      default:
+        // fallback if no api key was found
+        return Future.failedFuture(UNAUTHORIZED);
     }
-    // fallback if no api key was found
-    handler.handle(Future.failedFuture(UNAUTHORIZED));
+
+    if (tokenExtractor != null) {
+      return tokenExtractor
+        .apply(token)
+        .compose(processedToken -> authenticate(audit, processedToken));
+    } else {
+      return authenticate(audit, token);
+    }
+  }
+
+  private Future<User> authenticate(SecurityAudit audit, String token) {
+    final TokenCredentials credentials = new TokenCredentials(token);
+    audit.credentials(credentials);
+
+    return authProvider
+      .authenticate(credentials)
+      .andThen(op -> audit.audit(Marker.AUTHENTICATION, op.succeeded()))
+      .recover(err -> Future.failedFuture(new HttpException(401, err)));
+  }
+
+  @Override
+  public APIKeyHandler tokenExtractor(Function<String, Future<String>> tokenExtractor) {
+    this.tokenExtractor = tokenExtractor;
+    return this;
   }
 }

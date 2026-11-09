@@ -16,31 +16,31 @@
 
 package io.vertx.ext.web.handler.impl;
 
-import io.vertx.core.AsyncResult;
+import io.netty.util.internal.StringUtil;
 import io.vertx.core.Future;
-import io.vertx.core.Handler;
 import io.vertx.core.Vertx;
-import io.vertx.core.impl.logging.Logger;
-import io.vertx.core.impl.logging.LoggerFactory;
+import io.vertx.core.internal.logging.Logger;
+import io.vertx.core.internal.logging.LoggerFactory;
 import io.vertx.core.shareddata.LocalMap;
 import io.vertx.core.shareddata.Shareable;
 import io.vertx.ext.auth.User;
-import io.vertx.ext.auth.VertxContextPRNG;
+import io.vertx.ext.auth.prng.VertxContextPRNG;
+import io.vertx.ext.auth.audit.Marker;
+import io.vertx.ext.auth.audit.SecurityAudit;
 import io.vertx.ext.auth.htdigest.HtdigestAuth;
 import io.vertx.ext.auth.htdigest.HtdigestCredentials;
 import io.vertx.ext.web.RoutingContext;
 import io.vertx.ext.web.Session;
 import io.vertx.ext.web.handler.DigestAuthHandler;
 import io.vertx.ext.web.handler.HttpException;
+import io.vertx.ext.web.impl.RoutingContextInternal;
 
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.HashSet;
+import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
-import java.util.Set;
-
-import static io.vertx.ext.auth.impl.Codec.base16Encode;
 
 /**
  * @author <a href="mailto:plopes@redhat.com">Paulo Lopes</a>
@@ -99,7 +99,7 @@ public class DigestAuthHandlerImpl extends HTTPAuthorizationHandler<HtdigestAuth
   }
 
   @Override
-  public void authenticate(RoutingContext context, Handler<AsyncResult<User>> handler) {
+  public Future<User> authenticate(RoutingContext context) {
     // clean up nonce
     long now = System.currentTimeMillis();
     if (now - lastExpireRun > nonceExpireTimeout / 2) {
@@ -116,113 +116,105 @@ public class DigestAuthHandlerImpl extends HTTPAuthorizationHandler<HtdigestAuth
       lastExpireRun = now;
     }
 
-    parseAuthorization(context, parseAuthorization -> {
-      if (parseAuthorization.failed()) {
-        handler.handle(Future.failedFuture(parseAuthorization.cause()));
-        return;
-      }
+    return parseAuthorization(context)
+      .compose(header -> {
+        final HtdigestCredentials credentials = new HtdigestCredentials();
 
-      final HtdigestCredentials authInfo = new HtdigestCredentials();
+        try {
+          // Split the parameters by comma.
+          String[] tokens = SPLITTER.split(header);
+          // Parse parameters.
+          int i = 0;
+          int len = tokens.length;
 
-      try {
-        // Split the parameters by comma.
-        String[] tokens = SPLITTER.split(parseAuthorization.result());
-        // Parse parameters.
-        int i = 0;
-        int len = tokens.length;
-
-        while (i < len) {
-          // Strip quotes and whitespace.
-          Matcher m = PARSER.matcher(tokens[i]);
-          if (m.find()) {
-            switch (m.group(1)) {
-              case "algorithm":
-                authInfo.setAlgorithm(m.group(2));
-                break;
-              case "cnonce":
-                authInfo.setCnonce(m.group(2));
-                break;
-              case "method":
-                authInfo.setMethod(m.group(2));
-                break;
-              case "nc":
-                authInfo.setNc(m.group(2));
-                break;
-              case "nonce":
-                authInfo.setNonce(m.group(2));
-                break;
-              case "opaque":
-                authInfo.setOpaque(m.group(2));
-                break;
-              case "qop":
-                authInfo.setQop(m.group(2));
-                break;
-              case "realm":
-                authInfo.setRealm(m.group(2));
-                break;
-              case "response":
-                authInfo.setResponse(m.group(2));
-                break;
-              case "uri":
-                authInfo.setUri(m.group(2));
-                break;
-              case "username":
-                authInfo.setUsername(m.group(2));
-                break;
-              default:
-                LOG.info("Uknown parameter: " + m.group(1));
+          while (i < len) {
+            // Strip quotes and whitespace.
+            Matcher m = PARSER.matcher(tokens[i]);
+            if (m.find()) {
+              switch (m.group(1)) {
+                case "algorithm":
+                  credentials.setAlgorithm(m.group(2));
+                  break;
+                case "cnonce":
+                  credentials.setCnonce(m.group(2));
+                  break;
+                case "method":
+                  credentials.setMethod(m.group(2));
+                  break;
+                case "nc":
+                  credentials.setNc(m.group(2));
+                  break;
+                case "nonce":
+                  credentials.setNonce(m.group(2));
+                  break;
+                case "opaque":
+                  credentials.setOpaque(m.group(2));
+                  break;
+                case "qop":
+                  credentials.setQop(m.group(2));
+                  break;
+                case "realm":
+                  credentials.setRealm(m.group(2));
+                  break;
+                case "response":
+                  credentials.setResponse(m.group(2));
+                  break;
+                case "uri":
+                  credentials.setUri(m.group(2));
+                  break;
+                case "username":
+                  credentials.setUsername(m.group(2));
+                  break;
+                default:
+                  LOG.info("Uknown parameter: " + m.group(1));
+              }
             }
+
+            ++i;
           }
 
-          ++i;
-        }
+          final String nonce = credentials.getNonce();
 
-        final String nonce = authInfo.getNonce();
-
-        // check for expiration
-        if (!nonces.containsKey(nonce)) {
-          handler.handle(Future.failedFuture(UNAUTHORIZED));
-          return;
-        }
-
-        // check for nonce counter (prevent replay attack)
-        if (authInfo.getQop() != null) {
-          int nc = Integer.parseInt(authInfo.getNc(), 16);
-          final Nonce n = nonces.get(nonce);
-          if (nc <= n.count) {
-            handler.handle(Future.failedFuture(UNAUTHORIZED));
-            return;
+          // check for expiration
+          if (!nonces.containsKey(nonce)) {
+            return Future.failedFuture(UNAUTHORIZED);
           }
-          // update the nounce count
-          nonces.put(nonce, new Nonce(n.createdAt, nc));
+
+          // check for nonce counter (prevent replay attack)
+          if (credentials.getQop() != null) {
+            int nc = Integer.parseInt(credentials.getNc(), 16);
+            final Nonce n = nonces.get(nonce);
+            if (nc <= n.count) {
+              return Future.failedFuture(UNAUTHORIZED);
+            }
+            // update the nounce count
+            nonces.put(nonce, new Nonce(n.createdAt, nc));
+          }
+
+        } catch (RuntimeException e) {
+          return Future.failedFuture(e);
         }
 
-      } catch (RuntimeException e) {
-        handler.handle(Future.failedFuture(e));
-        return;
-      }
-
-      // validate the opaque value
-      final Session session = context.session();
-      if (session != null) {
-        String opaque = (String) session.data().get("opaque");
-        if (opaque != null && !opaque.equals(authInfo.getOpaque())) {
-          handler.handle(Future.failedFuture(UNAUTHORIZED));
-          return;
+        // validate the opaque value
+        final Session session = context.session();
+        if (session != null) {
+          String opaque = (String) session.data().get("opaque");
+          if (opaque != null && !opaque.equals(credentials.getOpaque())) {
+            return Future.failedFuture(UNAUTHORIZED);
+          }
         }
-      }
 
-      // we now need to pass some extra info
-      authInfo.setMethod(context.request().method().name());
+        // we now need to pass some extra info
+        credentials.setMethod(context.request().method().name());
 
-      authProvider.authenticate(authInfo, authn -> {
-        if (authn.failed()) {
-          handler.handle(Future.failedFuture(new HttpException(401, authn.cause())));
-        } else {
-          handler.handle(authn);
-        }
+        final SecurityAudit audit = ((RoutingContextInternal) context).securityAudit();
+        audit.credentials(credentials);
+
+        return authProvider
+          .authenticate(credentials)
+          .andThen(op -> audit.audit(Marker.AUTHENTICATION, op.succeeded()))
+          .recover(err -> Future.failedFuture(new HttpException(401, err)));
       });
-    });
   }
 
   @Override
@@ -256,6 +248,6 @@ public class DigestAuthHandlerImpl extends HTTPAuthorizationHandler<HtdigestAuth
 
   private static synchronized String md5(byte[] payload) {
     MD5.reset();
-    return base16Encode(MD5.digest(payload));
+    return StringUtil.toHexStringPadded(MD5.digest(payload));
   }
 }

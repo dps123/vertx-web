@@ -17,43 +17,43 @@ package io.vertx.ext.web.client.impl;
 
 import io.netty.handler.codec.http.QueryStringDecoder;
 import io.netty.handler.codec.http.QueryStringEncoder;
-import io.vertx.core.AsyncResult;
-import io.vertx.core.Handler;
+import io.vertx.core.Future;
 import io.vertx.core.MultiMap;
 import io.vertx.core.buffer.Buffer;
 import io.vertx.core.http.HttpHeaders;
 import io.vertx.core.http.HttpMethod;
 import io.vertx.core.http.RequestOptions;
+import io.vertx.core.internal.http.HttpClientInternal;
+import io.vertx.core.internal.ContextInternal;
 import io.vertx.core.json.JsonObject;
+import io.vertx.core.net.Address;
 import io.vertx.core.net.ProxyOptions;
 import io.vertx.core.net.SocketAddress;
 import io.vertx.core.streams.ReadStream;
 import io.vertx.ext.auth.authentication.Credentials;
 import io.vertx.ext.web.client.HttpRequest;
 import io.vertx.ext.web.client.HttpResponse;
-import io.vertx.ext.web.client.predicate.ResponsePredicate;
 import io.vertx.ext.web.codec.BodyCodec;
 import io.vertx.ext.web.multipart.MultipartForm;
+import io.vertx.uritemplate.ExpandOptions;
 import io.vertx.uritemplate.UriTemplate;
 import io.vertx.uritemplate.Variables;
 
 import java.net.MalformedURLException;
 import java.net.URI;
 import java.net.URISyntaxException;
-import java.util.ArrayList;
-import java.util.Collections;
-import java.util.List;
-import java.util.Map;
-import java.util.Objects;
+import java.util.*;
 
 /**
  * @author <a href="mailto:julien@julienviet.com">Julien Viet</a>
  */
 public class HttpRequestImpl<T> implements HttpRequest<T> {
 
+  private static final ExpandOptions INTERNAL_EXPAND_OPTIONS = new ExpandOptions().setAllowVariableMiss(true);
+
   private final WebClientBase client;
   private ProxyOptions proxyOptions;
-  private SocketAddress serverAddress;
+  private final Address address;
   private MultiMap queryParams;
   private Variables templateParams;
   private HttpMethod method;
@@ -63,17 +63,19 @@ public class HttpRequestImpl<T> implements HttpRequest<T> {
   private String virtualHost;
   private Object uri;
   private long timeout = -1;
+  private long idleTimeout = -1;
+  private long connectTimeout = -1;
+  private String routingKey;
   private boolean followRedirects;
   private Boolean ssl;
   private boolean multipartMixed = true;
   private String traceOperation;
-  private List<ResponsePredicate> expectations;
   private BodyCodec<T> codec;
   MultiMap headers;
 
   HttpRequestImpl(WebClientBase client,
                   HttpMethod method,
-                  SocketAddress serverAddress,
+                  Address address,
                   UriTemplate absoluteUri,
                   BodyCodec<T> codec,
                   boolean followRedirects,
@@ -82,7 +84,7 @@ public class HttpRequestImpl<T> implements HttpRequest<T> {
     Objects.requireNonNull(absoluteUri, "AbsoluteUri cannot be null");
     this.client = client;
     this.absoluteUri = absoluteUri;
-    this.serverAddress = serverAddress;
+    this.address = address;
     this.method = method;
     this.ssl = null;
     this.host = null;
@@ -96,7 +98,7 @@ public class HttpRequestImpl<T> implements HttpRequest<T> {
 
   HttpRequestImpl(WebClientBase client,
                   HttpMethod method,
-                  SocketAddress serverAddress,
+                  Address address,
                   Boolean ssl,
                   int port,
                   String host,
@@ -108,7 +110,7 @@ public class HttpRequestImpl<T> implements HttpRequest<T> {
     Objects.requireNonNull(host, "Host cannot be null");
     this.client = client;
     this.absoluteUri = null;
-    this.serverAddress = serverAddress;
+    this.address = address;
     this.method = method;
     this.ssl = ssl;
     this.port = port;
@@ -123,7 +125,7 @@ public class HttpRequestImpl<T> implements HttpRequest<T> {
   private HttpRequestImpl(HttpRequestImpl<T> other) {
     this.client = other.client;
     this.absoluteUri = other.absoluteUri;
-    this.serverAddress = other.serverAddress;
+    this.address = other.address;
     this.ssl = other.ssl;
     this.method = other.method;
     this.port = other.port;
@@ -134,10 +136,12 @@ public class HttpRequestImpl<T> implements HttpRequest<T> {
     this.followRedirects = other.followRedirects;
     this.proxyOptions = other.proxyOptions != null ? new ProxyOptions(other.proxyOptions) : null;
     this.timeout = other.timeout;
+    this.idleTimeout = other.idleTimeout;
+    this.connectTimeout = other.connectTimeout;
+    this.routingKey = other.routingKey;
     this.queryParams = other.queryParams != null ? MultiMap.caseInsensitiveMultiMap().addAll(other.queryParams) : null;
     this.multipartMixed = other.multipartMixed;
     this.virtualHost = other.virtualHost;
-    this.expectations = other.expectations != null ? new ArrayList<>(other.expectations) : null;
   }
 
   @Override
@@ -204,7 +208,14 @@ public class HttpRequestImpl<T> implements HttpRequest<T> {
   }
 
   public String uri() {
-    return uri.toString();
+    if (uri == null) {
+      return null;
+    } else if (uri instanceof UriTemplate) {
+      UriTemplate uriTemplate = (UriTemplate) uri;
+      return uriTemplate.expandToString(templateParams(), INTERNAL_EXPAND_OPTIONS);
+    } else {
+      return uri.toString();
+    }
   }
 
   @Override
@@ -231,8 +242,20 @@ public class HttpRequestImpl<T> implements HttpRequest<T> {
   }
 
   @Override
+  public HttpRequest<T> putHeader(CharSequence name, CharSequence value) {
+    headers().set(name, value);
+    return this;
+  }
+
+  @Override
   public HttpRequest<T> putHeader(String name, Iterable<String> value) {
     headers().set(name, value);
+    return this;
+  }
+
+  @Override
+  public HttpRequest<T> putHeader(CharSequence name, Iterable<CharSequence> values) {
+    headers().set(name, values);
     return this;
   }
 
@@ -261,7 +284,29 @@ public class HttpRequestImpl<T> implements HttpRequest<T> {
 
   @Override
   public long timeout() {
-      return timeout;
+    return timeout;
+  }
+
+  @Override
+  public HttpRequest<T> idleTimeout(long timeout) {
+    idleTimeout = timeout;
+    return this;
+  }
+
+  @Override
+  public long idleTimeout() {
+    return idleTimeout;
+  }
+
+  @Override
+  public HttpRequest<T> connectTimeout(long timeout) {
+    connectTimeout = timeout;
+    return this;
+  }
+
+  @Override
+  public long connectTimeout() {
+    return connectTimeout;
   }
 
   @Override
@@ -306,6 +351,17 @@ public class HttpRequestImpl<T> implements HttpRequest<T> {
   }
 
   @Override
+  public HttpRequest<T> routingKey(String key) {
+    routingKey = key;
+    return this;
+  }
+
+  @Override
+  public String routingKey() {
+    return routingKey;
+  }
+
+  @Override
   public HttpRequest<T> proxy(ProxyOptions proxyOptions) {
     this.proxyOptions = proxyOptions;
     return this;
@@ -314,20 +370,6 @@ public class HttpRequestImpl<T> implements HttpRequest<T> {
   @Override
   public ProxyOptions proxy() {
     return proxyOptions;
-  }
-
-  @Override
-  public HttpRequest<T> expect(ResponsePredicate expectation) {
-    if (expectations == null) {
-      expectations = new ArrayList<>();
-    }
-    expectations.add(expectation);
-    return this;
-  }
-
-  @Override
-  public List<ResponsePredicate> expectations() {
-    return expectations != null ? expectations : Collections.emptyList();
   }
 
   @Override
@@ -385,48 +427,48 @@ public class HttpRequestImpl<T> implements HttpRequest<T> {
   }
 
   @Override
-  public void sendStream(ReadStream<Buffer> body, Handler<AsyncResult<HttpResponse<T>>> handler) {
-    send(null, body, handler);
+  public Future<HttpResponse<T>> sendStream(ReadStream<Buffer> body) {
+    return send(null, body.pipe());
   }
 
   @Override
-  public void send(Handler<AsyncResult<HttpResponse<T>>> handler) {
-    send(null, null, handler);
+  public Future<HttpResponse<T>> send() {
+    return send(null, null);
   }
 
   @Override
-  public void sendBuffer(Buffer body, Handler<AsyncResult<HttpResponse<T>>> handler) {
-    send(null, body, handler);
+  public Future<HttpResponse<T>> sendBuffer(Buffer body) {
+    return send(null, body);
   }
 
   @Override
-  public void sendJsonObject(JsonObject body, Handler<AsyncResult<HttpResponse<T>>> handler) {
-    send("application/json", body,handler);
+  public Future<HttpResponse<T>> sendJsonObject(JsonObject body) {
+    return send("application/json", body);
   }
 
   @Override
-  public void sendJson(Object body, Handler<AsyncResult<HttpResponse<T>>> handler) {
-    send("application/json", body, handler);
+  public Future<HttpResponse<T>> sendJson(Object body) {
+    return send("application/json", body);
   }
 
   @Override
-  public void sendForm(MultiMap body, Handler<AsyncResult<HttpResponse<T>>> handler) {
-    sendForm(body, "UTF-8", handler);
+  public Future<HttpResponse<T>> sendForm(MultiMap body) {
+    return sendForm(body, "UTF-8");
   }
 
   @Override
-  public void sendForm(MultiMap body, String charset, Handler<AsyncResult<HttpResponse<T>>> handler) {
+  public Future<HttpResponse<T>> sendForm(MultiMap body, String charset) {
     MultipartForm parts = MultipartForm.create();
     for (Map.Entry<String, String> attribute : body) {
       parts.attribute(attribute.getKey(), attribute.getValue());
     }
     parts.setCharset(charset);
-    send("application/x-www-form-urlencoded", parts, handler);
+    return send("application/x-www-form-urlencoded", parts);
   }
 
   @Override
-  public void sendMultipartForm(MultipartForm body, Handler<AsyncResult<HttpResponse<T>>> handler) {
-    send("multipart/form-data", body, handler);
+  public Future<HttpResponse<T>> sendMultipartForm(MultipartForm body) {
+    return send("multipart/form-data", body);
   }
 
   RequestOptions buildRequestOptions() throws URISyntaxException, MalformedURLException {
@@ -469,11 +511,11 @@ public class HttpRequestImpl<T> implements HttpRequest<T> {
     if (protocol != null && !protocol.equals("http") && !protocol.equals("https")) {
       // we have to create an abs url again to parse it in HttpClient
       URI tmp = new URI(protocol, null, host, port, uri, null, null);
-      requestOptions.setServer(this.serverAddress)
+      requestOptions.setServer(this.address)
         .setMethod(this.method)
         .setAbsoluteURI(tmp.toString());
     } else {
-      requestOptions.setServer(this.serverAddress)
+      requestOptions.setServer(this.address)
         .setMethod(this.method)
         .setHost(host)
         .setPort(port)
@@ -493,15 +535,26 @@ public class HttpRequestImpl<T> implements HttpRequest<T> {
       requestOptions.setHost(this.virtualHost);
     }
     this.mergeHeaders(requestOptions);
-    requestOptions.setTimeout(this.timeout);
+    if (timeout >= 0) {
+      requestOptions.setTimeout(timeout);
+    }
+    if (idleTimeout >= 0) {
+      requestOptions.setIdleTimeout(idleTimeout);
+    }
+    if (connectTimeout >= 0) {
+      requestOptions.setConnectTimeout(connectTimeout);
+    }
+    requestOptions.setRoutingKey(this.routingKey);
     requestOptions.setProxyOptions(this.proxyOptions);
     requestOptions.setTraceOperation(this.traceOperation);
     return requestOptions;
   }
 
-  void send(String contentType, Object body, Handler<AsyncResult<HttpResponse<T>>> handler) {
-    HttpContext<T> ctx = client.createContext(handler);
+  Future<HttpResponse<T>> send(String contentType, Object body) {
+    ContextInternal context = ((HttpClientInternal) client.client).vertx().getOrCreateContext();
+    HttpContext<T> ctx = client.createContext(context);
     ctx.prepareRequest(this, contentType, body);
+    return ctx.future();
   }
 
   void mergeHeaders(RequestOptions options) {

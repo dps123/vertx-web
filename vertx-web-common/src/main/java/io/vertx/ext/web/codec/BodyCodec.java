@@ -16,16 +16,18 @@
 package io.vertx.ext.web.codec;
 
 import io.vertx.codegen.annotations.GenIgnore;
+import io.vertx.codegen.annotations.Unstable;
 import io.vertx.codegen.annotations.VertxGen;
-import io.vertx.core.AsyncResult;
 import io.vertx.core.Handler;
 import io.vertx.core.buffer.Buffer;
 import io.vertx.core.json.JsonArray;
 import io.vertx.core.json.JsonObject;
 import io.vertx.core.parsetools.JsonParser;
+import io.vertx.core.streams.ReadStream;
 import io.vertx.core.streams.WriteStream;
 import io.vertx.ext.web.codec.impl.BodyCodecImpl;
 import io.vertx.ext.web.codec.impl.JsonStreamBodyCodec;
+import io.vertx.ext.web.codec.impl.SseBodyCodec;
 import io.vertx.ext.web.codec.impl.StreamingBodyCodec;
 import io.vertx.ext.web.codec.spi.BodyStream;
 
@@ -99,7 +101,7 @@ public interface BodyCodec<T> {
    * @param decode the decode function
    * @return the created codec
    */
-  static <T> BodyCodec<T> create(Function<Buffer, T> decode) {
+  static <T> BodyCodec<T> stream(Function<Buffer, T> decode) {
     return new BodyCodecImpl<>(decode);
   }
 
@@ -140,11 +142,22 @@ public interface BodyCodec<T> {
   }
 
   /**
+   * A body codec that parse the response as a Server-SentEvent stream.
+   *
+   * @param handler the non-null {@code handler} for the stream of Server-Sent Events.
+   * @return the body codec for a write stream
+   */
+  @Unstable
+  static BodyCodec<Void> sseStream(Handler<ReadStream<SseEvent>> handler) {
+    return new SseBodyCodec(handler);
+  }
+
+  /**
    * Create the {@link BodyStream}.
    * <p>
    * This method is usually called for creating the pump for the HTTP response and should not be called directly.
    */
   @GenIgnore
-  void create(Handler<AsyncResult<BodyStream<T>>> handler);
+  BodyStream<T> stream() throws Exception;
 
 }

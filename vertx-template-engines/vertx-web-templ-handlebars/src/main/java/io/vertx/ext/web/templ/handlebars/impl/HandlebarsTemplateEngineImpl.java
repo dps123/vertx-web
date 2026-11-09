@@ -16,24 +16,25 @@
 
 package io.vertx.ext.web.templ.handlebars.impl;
 
-import java.io.FileNotFoundException;
-import java.io.IOException;
-import java.nio.charset.Charset;
-import java.util.List;
-import java.util.Map;
-
-import io.vertx.ext.web.common.template.CachingTemplateEngine;
-
 import com.github.jknack.handlebars.Context;
 import com.github.jknack.handlebars.Handlebars;
 import com.github.jknack.handlebars.Template;
 import com.github.jknack.handlebars.ValueResolver;
 import com.github.jknack.handlebars.io.TemplateLoader;
 import com.github.jknack.handlebars.io.TemplateSource;
-import io.vertx.core.*;
+import io.netty.util.internal.PlatformDependent;
+import io.vertx.core.Future;
+import io.vertx.core.Vertx;
 import io.vertx.core.buffer.Buffer;
-import io.vertx.ext.web.common.template.impl.TemplateHolder;
+import io.vertx.ext.web.common.template.CachingTemplateEngine;
+import io.vertx.ext.web.common.template.CachedTemplate;
 import io.vertx.ext.web.templ.handlebars.HandlebarsTemplateEngine;
+
+import java.io.FileNotFoundException;
+import java.io.IOException;
+import java.nio.charset.Charset;
+import java.util.List;
+import java.util.Map;
 
 /**
  * @author <a href="http://pmlopes@gmail.com">Paulo Lopes</a>
@@ -42,7 +43,7 @@ import io.vertx.ext.web.templ.handlebars.HandlebarsTemplateEngine;
 public class HandlebarsTemplateEngineImpl extends CachingTemplateEngine<Template> implements HandlebarsTemplateEngine {
 
   private static final List<ValueResolver> VALUE_RESOLVERS_LIST = ValueResolver.defaultValueResolvers();
-  private static final ValueResolver[] VALUE_RESOLVERS = VALUE_RESOLVERS_LIST.toArray(new ValueResolver[VALUE_RESOLVERS_LIST.size()]);
+  private static final ValueResolver[] VALUE_RESOLVERS = VALUE_RESOLVERS_LIST.toArray(new ValueResolver[0]);
 
   private final Handlebars handlebars;
   private final Loader loader;
@@ -60,18 +61,19 @@ public class HandlebarsTemplateEngineImpl extends CachingTemplateEngine<Template
     // default resolvers
     System.arraycopy(VALUE_RESOLVERS, 0, resolvers, 2, VALUE_RESOLVERS.length);
     // create the engine
-    handlebars = new Handlebars(loader);
+    handlebars = new Handlebars(loader)
+      .with(new JsonFormatter());
   }
 
   @Override
-  public void render(Map<String, Object> context, String templateFile, Handler<AsyncResult<Buffer>> handler) {
+  public Future<Buffer> render(Map<String, Object> context, String templateFile) {
     try {
       String src = adjustLocation(templateFile);
-      TemplateHolder<Template> template = getTemplate(src);
+      CachedTemplate<Template> template = getTemplate(src);
 
       if (template == null) {
         // either it's not cache or cache is disabled
-        int idx = src.lastIndexOf('/');
+        int idx = findLastFileSeparator(src);
         String prefix = "";
         String basename = src;
         if (idx != -1) {
@@ -80,31 +82,28 @@ public class HandlebarsTemplateEngineImpl extends CachingTemplateEngine<Template
         }
         synchronized (this) {
           loader.setPrefix(prefix);
-          template = new TemplateHolder<>(handlebars.compile(basename), prefix);
+          template = new CachedTemplate<>(handlebars.compile(basename), prefix);
         }
         putTemplate(src, template);
       }
 
-      Context engineContext = Context.newBuilder(context).resolver(getResolvers()).build();
-      handler.handle(Future.succeededFuture(Buffer.buffer(template.template().apply(engineContext))));
+      Context engineContext = Context.newBuilder(context).resolver(resolvers).build();
+      return Future.succeededFuture(Buffer.buffer(template.template().apply(engineContext)));
     } catch (Exception ex) {
-      handler.handle(Future.failedFuture(ex));
+      return Future.failedFuture(ex);
     }
   }
 
-  @Override
-  public <T> T unwrap() {
-    return (T) handlebars;
+  private static int findLastFileSeparator(String src) {
+    if (PlatformDependent.isWindows()) {
+      return Math.max(src.lastIndexOf('/'), src.lastIndexOf('\\'));
+    }
+    return src.lastIndexOf('/');
   }
 
   @Override
-  public Handlebars getHandlebars() {
+  public Handlebars unwrap() {
     return handlebars;
-  }
-
-  @Override
-  public ValueResolver[] getResolvers() {
-    return resolvers;
   }
 
   @Override

@@ -1,13 +1,11 @@
 package io.vertx.ext.web.templ.rythm.impl;
 
-import io.vertx.core.Handler;
-import io.vertx.core.AsyncResult;
 import io.vertx.core.Future;
 import io.vertx.core.Vertx;
 import io.vertx.core.buffer.Buffer;
 import io.vertx.core.file.FileSystem;
 import io.vertx.ext.web.common.template.CachingTemplateEngine;
-import io.vertx.ext.web.common.template.impl.TemplateHolder;
+import io.vertx.ext.web.common.template.CachedTemplate;
 import io.vertx.ext.web.templ.rythm.RythmTemplateEngine;
 import org.rythmengine.RythmEngine;
 
@@ -29,15 +27,15 @@ public class RythmTemplateEngineImpl extends CachingTemplateEngine<String>  impl
   }
 
   @Override
-  public void render(Map<String, Object> context, String templateFile, Handler<AsyncResult<Buffer>> handler) {
+  public Future<Buffer> render(Map<String, Object> context, String templateFile) {
     try {
       String src = adjustLocation(templateFile);
-      TemplateHolder<String> template = getTemplate(src);
+      CachedTemplate<String> template = getTemplate(src);
 
       if (template == null) {
         // either it's not cache or cache is disabled
         synchronized (this) {
-          template = new TemplateHolder<>(fileSystem.readFileBlocking(src).toString());
+          template = new CachedTemplate<>(fileSystem.readFileBlocking(src).toString());
         }
         putTemplate(src, template);
       }
@@ -49,13 +47,13 @@ public class RythmTemplateEngineImpl extends CachingTemplateEngine<String>  impl
         engine.prepare(Locale.getDefault());
       }
 
-      handler.handle(Future.succeededFuture(Buffer.buffer(engine.renderString(template.template(), context))));
+      return Future.succeededFuture(Buffer.buffer(engine.renderString(template.template(), context)));
     } catch(Exception ex) {
-      handler.handle(Future.failedFuture(ex));
+      return Future.failedFuture(ex);
     }
   }
 
-  public <T> T unwrap() throws ClassCastException {
-    return (T) engine;
+  public RythmEngine unwrap() throws ClassCastException {
+    return engine;
   }
 }

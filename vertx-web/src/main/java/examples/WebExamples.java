@@ -23,19 +23,25 @@ import io.vertx.ext.auth.oauth2.OAuth2Auth;
 import io.vertx.ext.auth.oauth2.OAuth2Options;
 import io.vertx.ext.auth.oauth2.providers.GithubAuth;
 import io.vertx.ext.auth.otp.totp.TotpAuth;
-import io.vertx.ext.auth.webauthn.*;
+import io.vertx.ext.auth.webauthn4j.CredentialStorage;
+import io.vertx.ext.auth.webauthn4j.WebAuthn4J;
+import io.vertx.ext.auth.webauthn4j.WebAuthn4JOptions;
 import io.vertx.ext.bridge.BridgeEventType;
 import io.vertx.ext.bridge.PermittedOptions;
+import io.vertx.ext.healthchecks.HealthChecks;
+import io.vertx.ext.healthchecks.Status;
 import io.vertx.ext.web.*;
 import io.vertx.ext.web.common.template.TemplateEngine;
 import io.vertx.ext.web.handler.*;
-import io.vertx.ext.web.handler.sockjs.*;
+import io.vertx.ext.web.handler.sockjs.SockJSBridgeOptions;
+import io.vertx.ext.web.handler.sockjs.SockJSHandler;
+import io.vertx.ext.web.handler.sockjs.SockJSHandlerOptions;
+import io.vertx.ext.web.healthchecks.HealthCheckHandler;
 import io.vertx.ext.web.sstore.ClusteredSessionStore;
 import io.vertx.ext.web.sstore.LocalSessionStore;
 import io.vertx.ext.web.sstore.SessionStore;
 
 import java.util.List;
-import java.util.function.Function;
 
 /**
  * These are the examples used in the documentation.
@@ -43,6 +49,7 @@ import java.util.function.Function;
  * @author <a href="mailto:julien@julienviet.com">Julien Viet</a>
  * @author <a href="http://tfox.org">Tim Fox</a>
  */
+@SuppressWarnings("unused")
 public class WebExamples {
 
   public void example1(Vertx vertx) {
@@ -126,10 +133,10 @@ public class WebExamples {
       // `/some/path/subdir`
       // `/some/path/subdir/blah.html`
       //
-      // but **ALSO**:
-      // `/some/path` the final slash is always optional with a wildcard to preserve
-      //              compatibility with many client libraries.
       // but **NOT**:
+      // `/some/path` the final slash is never optional with a wildcard to
+      //              handle sub routing and composition without risking wrong
+      //              configuration like bellow:
       // `/some/patha`
       // `/some/patha/`
       // etc...
@@ -173,6 +180,20 @@ public class WebExamples {
         // naming pattern in use is not the "extended" one. That is because in
         // that case "-" is considered to be part of the variable name and
         // not a separator.
+      });
+
+  }
+
+  public void example4_3(Router router) {
+
+    router
+      .route(HttpMethod.GET, "/users/:id::integer")
+      .handler(ctx -> {
+        // the route only matches when the "id" parameter is an integer, so
+        // requests like /users/abc do not match and are answered with a 404
+        int id = Integer.parseInt(ctx.pathParam("id"));
+
+        // Do something with it...
       });
 
   }
@@ -697,6 +718,10 @@ public class WebExamples {
     });
   }
 
+  public void housekeepingUploadDir(Router router) {
+    router.route().handler(BodyHandler.create().setDeleteUploadedFilesOnEnd(true));
+  }
+
   public void example30(RoutingContext ctx) {
 
     Cookie someCookie = ctx.request().getCookie("mycookie");
@@ -732,10 +757,8 @@ public class WebExamples {
   public void example32() {
 
     // a clustered Vert.x
-    Vertx.clusteredVertx(new VertxOptions(), res -> {
-
-      Vertx vertx = res.result();
-
+    Vertx.clusteredVertx(new VertxOptions())
+      .onSuccess(vertx -> {
       // Create a clustered session store using defaults
       SessionStore store1 = ClusteredSessionStore.create(vertx);
 
@@ -827,7 +850,7 @@ public class WebExamples {
       // This will require a login
 
       // This will have the value true
-      boolean isAuthenticated = ctx.user() != null;
+      boolean isAuthenticated = ctx.userContext().authenticated();
 
     });
   }
@@ -843,7 +866,9 @@ public class WebExamples {
 
     // Handle the actual login
     // One of your pages must POST form login data
-    router.post("/login").handler(FormLoginHandler.create(authProvider));
+    router.post("/login")
+      .handler(BodyHandler.create())
+      .handler(FormLoginHandler.create(authProvider));
 
     // Set a static server to serve static resources, e.g. the login page
     router.route().handler(StaticHandler.create());
@@ -861,7 +886,7 @@ public class WebExamples {
         // This will require a login
 
         // This will have the value true
-        boolean isAuthenticated = ctx.user() != null;
+        boolean isAuthenticated = ctx.userContext().authenticated();
 
       });
 
@@ -909,7 +934,8 @@ public class WebExamples {
     // Will only accept GET requests from origin "vertx.io"
     router.route()
       .handler(
-        CorsHandler.create("vertx\\.io")
+        CorsHandler.create()
+          .addOriginWithRegex("vertx\\.io")
           .allowedMethod(HttpMethod.GET));
 
     router.route().handler(ctx -> {
@@ -969,6 +995,9 @@ public class WebExamples {
       .setHeartbeatInterval(2000);
 
     SockJSHandler sockJSHandler = SockJSHandler.create(vertx, options);
+
+    // Required to handle SockJS traffic when WebSockets are not available
+    router.post("/myapp/*").handler(BodyHandler.create());
 
     router.route("/myapp/*")
       .subRouter(sockJSHandler.socketHandler(sockJSSocket -> {
@@ -1264,6 +1293,8 @@ public class WebExamples {
 
   public void example54(Vertx vertx, Router router) {
 
+    // Required to handle request having an unsafe method (`POST`, `PUT`, ...etc.)
+    router.route().handler(BodyHandler.create());
     router.route().handler(CSRFHandler.create(vertx, "abracadabra"));
     router.route().handler(ctx -> {
 
@@ -1746,45 +1777,6 @@ public class WebExamples {
     });
   }
 
-  public void example75(Vertx vertx, Router router, Function<Authenticator, Future<List<Authenticator>>> fetcher, Function<Authenticator, Future<Void>> updater) {
-    // create the webauthn security object
-    WebAuthn webAuthn = WebAuthn.create(
-        vertx,
-        new WebAuthnOptions()
-          .setRelyingParty(new RelyingParty().setName("Vert.x WebAuthN Demo"))
-          // What kind of authentication do you want? do you care?
-          // # security keys
-          .setAuthenticatorAttachment(AuthenticatorAttachment.CROSS_PLATFORM)
-          // # fingerprint
-          .setAuthenticatorAttachment(AuthenticatorAttachment.PLATFORM)
-          .setUserVerification(UserVerification.REQUIRED))
-      // where to load the credentials from?
-      .authenticatorFetcher(fetcher)
-      // update the state of an authenticator
-      .authenticatorUpdater(updater);
-
-    // parse the BODY
-    router.post()
-      .handler(BodyHandler.create());
-    // add a session handler
-    router.route()
-      .handler(SessionHandler
-        .create(LocalSessionStore.create(vertx)));
-
-    // security handler
-    WebAuthnHandler webAuthNHandler = WebAuthnHandler.create(webAuthn)
-      .setOrigin("https://192.168.178.74.xip.io:8443")
-      // required callback
-      .setupCallback(router.post("/webauthn/response"))
-      // optional register callback
-      .setupCredentialsCreateCallback(router.post("/webauthn/register"))
-      // optional login callback
-      .setupCredentialsGetCallback(router.post("/webauthn/login"));
-
-    // secure the remaining routes
-    router.route().handler(webAuthNHandler);
-  }
-
   public void example76(Vertx vertx, Router router) {
     // we can now allow forward header parsing
     // and in this case only the "Forward" header will be considered
@@ -1808,7 +1800,7 @@ public class WebExamples {
     router.allowForward(AllowForwardHeaders.NONE);
   }
 
-  public void example78(Router router, AuthenticationHandler authNHandlerA, AuthenticationHandler authNHandlerB, AuthenticationHandler authNHandlerC) {
+  public void exampleChainAuthHandler(Router router, AuthenticationHandler authNHandlerA, AuthenticationHandler authNHandlerB, AuthenticationHandler authNHandlerC) {
 
     // Chain will verify (A Or (B And C))
     ChainAuthHandler chain =
@@ -1826,7 +1818,7 @@ public class WebExamples {
     });
   }
 
-  public void example78(Router router, SessionHandler sessionHandler) {
+  public void exampleSessionFlushOperation(Router router, SessionHandler sessionHandler) {
 
     router.route().handler(ctx -> sessionHandler.flush(ctx)
       .onSuccess(v -> ctx.end("Success!"))
@@ -1968,4 +1960,109 @@ public class WebExamples {
         ctx.end(value);
       });
   }
+
+  public void example89(Router router) {
+    router
+      .route("/high/security/route/check")
+      .handler(ctx -> {
+        // if the user isn't admin, we ask the user to login again as admin
+        ctx
+          .userContext()
+          .loginHint("admin")
+          .impersonate();
+      });
+  }
+
+  public void example90(Router router) {
+    router
+      .route("/high/security/route/back/to/me")
+      .handler(ctx -> {
+        ctx
+          .userContext()
+          .restore();
+      });
+  }
+
+  public void example91(Router router) {
+    router
+      .route("/high/security/route/refresh/me")
+      .handler(ctx -> {
+        ctx
+          .userContext()
+          .refresh();
+      });
+  }
+
+  public void example88(Router router) {
+    router.route()
+      .handler(SecurityAuditLoggerHandler.create());
+
+    // By default, nothing seems to happen when the handler is called
+    // in order to get it to log, you need to set the logger:
+    // io.vertx.ext.auth.audit.SecurityAudit
+    // to level INFO
+  }
+
+  public void exposeHealthChecks(Router router, HealthChecks healthChecks) {
+    HealthCheckHandler healthCheckHandler = HealthCheckHandler.createWithHealthChecks(healthChecks);
+    router.get("/health*").handler(healthCheckHandler);
+  }
+
+  public void registerHealthCheckProcedureDirectly(Vertx vertx, Router router) {
+    HealthCheckHandler healthCheckHandler = HealthCheckHandler.create(vertx);
+
+    // Register procedures
+    // It can be done after the route registration, or even at runtime
+    healthCheckHandler.register("my-procedure-name", promise -> {
+      // Do the check ...
+      // Upon success ...
+      promise.complete(Status.OK());
+      // Or, in case of failure ...
+      promise.complete(Status.KO());
+    });
+
+    router.get("/health*").handler(healthCheckHandler);
+  }
+
+  public void exposeHealthChecksWithAuth(Vertx vertx, Router router, AuthenticationProvider auth) {
+    HealthCheckHandler healthCheckHandler = HealthCheckHandler.create(vertx, auth);
+    router.get("/health*").handler(healthCheckHandler);
+  }
+
+  public void example89(Vertx vertx, Router router, CredentialStorage credentialStorage) {
+	    // create the webauthn4j security object
+	    WebAuthn4J webAuthn = WebAuthn4J.create(
+	        vertx,
+	        new WebAuthn4JOptions()
+	          .setRelyingParty(new io.vertx.ext.auth.webauthn4j.RelyingParty().setName("Vert.x WebAuthN4J Demo"))
+	          // What kind of authentication do you want? do you care?
+	          // # security keys
+	          .setAuthenticatorAttachment(io.vertx.ext.auth.webauthn4j.AuthenticatorAttachment.CROSS_PLATFORM)
+	          // # fingerprint
+	          .setAuthenticatorAttachment(io.vertx.ext.auth.webauthn4j.AuthenticatorAttachment.PLATFORM)
+	          .setUserVerification(io.vertx.ext.auth.webauthn4j.UserVerification.REQUIRED))
+	      // where to load or store the credentials
+	      .credentialStorage(credentialStorage);
+
+	    // parse the BODY
+	    router.post()
+	      .handler(BodyHandler.create());
+	    // add a session handler
+	    router.route()
+	      .handler(SessionHandler
+	        .create(LocalSessionStore.create(vertx)));
+
+	    // security handler
+	    WebAuthn4JHandler webAuthNHandler = WebAuthn4JHandler.create(webAuthn)
+	      .setOrigin("https://192.168.178.74.xip.io:8443")
+	      // required callback
+	      .setupCallback(router.post("/webauthn4j/response"))
+	      // optional register options callback
+	      .setupCredentialsCreateCallback(router.post("/webauthn4j/register"))
+	      // optional login options callback
+	      .setupCredentialsGetCallback(router.post("/webauthn4j/login"));
+
+	    // secure the remaining routes
+	    router.route().handler(webAuthNHandler);
+	  }
 }

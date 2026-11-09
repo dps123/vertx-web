@@ -1,0 +1,192 @@
+package io.vertx.ext.web.tests.handler.sockjs;
+
+import io.vertx.core.Handler;
+import io.vertx.core.Promise;
+import io.vertx.core.Vertx;
+import io.vertx.core.http.HttpServer;
+import io.vertx.core.http.WebSocketClient;
+import io.vertx.core.internal.logging.Logger;
+import io.vertx.core.internal.logging.LoggerFactory;
+import io.vertx.core.json.JsonObject;
+import io.vertx.ext.bridge.PermittedOptions;
+import io.vertx.ext.web.Router;
+import io.vertx.ext.web.handler.LoggerHandler;
+import io.vertx.ext.web.handler.sockjs.BridgeEvent;
+import io.vertx.ext.web.handler.sockjs.SockJSBridgeOptions;
+import io.vertx.ext.web.handler.sockjs.SockJSHandler;
+import io.vertx.junit5.Checkpoint;
+import io.vertx.junit5.VertxTest;
+import io.vertx.test.core.TestUtils;
+import org.junit.Assert;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+
+import java.util.concurrent.atomic.AtomicInteger;
+
+import static org.junit.jupiter.api.Assertions.fail;
+
+
+/**
+ * @author Szymon Glombiowski
+ */
+
+@VertxTest
+public class SockJSErrorTest {
+
+  protected Vertx vertx;
+
+  public static final String EVENTBUS_ADDRESS = "addr1";
+  public static final String EVENTBUS_REGISTER_MESSAGE = "{\"type\":\"register\",\"address\":\"" + EVENTBUS_ADDRESS + "\",\"headers\":{\"Accept\":\"application/json\"}}";
+  public static final String EVENTBUS_UNREGISTER_MESSAGE = "{\"type\":\"unregister\",\"address\":\"" + EVENTBUS_ADDRESS + "\",\"headers\":{\"Accept\":\"application/json\"}}";
+  public static final String WSS_PATH = "/wss/";
+  public static final String WEBSOCKET_PATH = WSS_PATH + "websocket";
+  private static final Logger log = LoggerFactory.getLogger(SockJSErrorTest.class);
+  public static final int PORT = 8080;
+  public static final String LOCALHOST = "localhost";
+  private int counter = 0;
+  private long timerId;
+  HttpServer server;
+
+  @BeforeEach
+  public void setUp(Vertx vertx) throws Exception {
+    this.vertx = vertx;
+
+    server = vertx.createHttpServer();
+
+    Router router = Router.router(vertx);
+    router.route().handler(LoggerHandler.create());
+    router.route("/").handler(event -> event.request().response().end("test"));
+
+    Router sockJSRouter = createEventBusRouter();
+    router.route(WSS_PATH + "*").subRouter(sockJSRouter);
+
+    server.requestHandler(router);
+    server.listen(PORT).await();
+
+    timerId = vertx.setPeriodic(100, id -> {
+      log.info("server sending number: " + ++counter);
+      vertx.eventBus().send(EVENTBUS_ADDRESS, counter);
+    });
+  }
+
+  @AfterEach
+  public void tearDown() {
+    vertx.cancelTimer(timerId);
+  }
+
+  @Test
+  public void testEventBusBridgeLeakingConsumers(Checkpoint checkpoint) {
+    Promise<Void> firstClientDone = Promise.promise();
+    // initial connection - double registration and unregistration
+    WebSocketClient client = vertx.createWebSocketClient();
+    client.connect(PORT, LOCALHOST, WEBSOCKET_PATH).onComplete(TestUtils.onSuccess(ws -> {
+      ws.writeTextMessage(EVENTBUS_REGISTER_MESSAGE);
+      ws.writeTextMessage(EVENTBUS_REGISTER_MESSAGE);
+      // those actions will cause leak - a consumer still registered
+      ws.handler(buff -> {
+        log.info("websocket client 1 received raw message: " + buff.toString("UTF-8"));
+        ws.writeTextMessage(EVENTBUS_UNREGISTER_MESSAGE);
+        ws.writeTextMessage(EVENTBUS_UNREGISTER_MESSAGE); // this does not do anything actually, just to match 2 registrations
+        ws.close();
+        firstClientDone.tryComplete();
+      });
+
+    }));
+
+    //make sure 1st client has completed
+    firstClientDone.future().await();
+
+    AtomicInteger counter = new AtomicInteger(-1);
+    WebSocketClient client2 = vertx.createWebSocketClient();
+    client2.connect(PORT, LOCALHOST, WEBSOCKET_PATH).onComplete(TestUtils.onSuccess(ws -> {
+      ws.writeTextMessage(EVENTBUS_REGISTER_MESSAGE);
+      // this client will only receive every other message
+      ws.handler(buff -> {
+        log.debug("websocket client 2 received raw message: " + buff.toString("UTF-8"));
+        JsonObject jsonObject = new JsonObject(buff.toString("UTF-8"));
+        int number = jsonObject.getInteger("body");
+        log.info("websocket client 2 received number: " + number);
+        // initialize - some messages might have already been handled by 1st client
+        if (counter.get() == -1) {
+          counter.set(number);
+        } else if (counter.incrementAndGet() != number) {
+          Assert.fail("Message was lost, next id not matching. Expected " + counter.get() + " but got " + number);
+          return;
+        }
+        if (number % 20 == 0) {
+          checkpoint.flag();
+        }
+      });
+    }));
+  }
+
+  @Test
+  public void testEventBusBridgeLeakingConsumersClean(Checkpoint checkpoint) {
+    Promise<Void> firstClientDone = Promise.promise();
+    // initial connection - single registration and unregistration
+    WebSocketClient client = vertx.createWebSocketClient();
+    client.connect(PORT, LOCALHOST, WEBSOCKET_PATH).onComplete(TestUtils.onSuccess(ws -> {
+      ws.writeTextMessage(EVENTBUS_REGISTER_MESSAGE);
+      // those actions will cause leak - a consumer still registered
+      ws.handler(buff -> {
+        log.info("websocket client 1 received raw message: " + buff.toString("UTF-8"));
+        ws.writeTextMessage(EVENTBUS_UNREGISTER_MESSAGE);
+        ws.close();
+        firstClientDone.tryComplete();
+      });
+    }));
+
+    //make sure 1st client has completed
+    firstClientDone.future().await();
+
+    AtomicInteger counter = new AtomicInteger(-1);
+    WebSocketClient client2 = vertx.createWebSocketClient();
+    client2.connect(PORT, LOCALHOST, WEBSOCKET_PATH).onComplete(TestUtils.onSuccess(ws -> {
+      ws.writeTextMessage(EVENTBUS_REGISTER_MESSAGE);
+      // this client will only receive every other message
+      ws.handler(buff -> {
+        log.debug("websocket client 2 received raw message: " + buff.toString("UTF-8"));
+        JsonObject jsonObject = new JsonObject(buff.toString("UTF-8"));
+        int number = jsonObject.getInteger("body");
+        log.info("websocket client 2 received number: " + number);
+        // initialize - some messages might have already been handled by 1st client
+        if (counter.get() == -1) {
+          counter.set(number);
+        } else if (counter.incrementAndGet() != number) {
+          fail("Message was lost, next id not matching. Expected " + counter.get() + " but got " + number);
+          return;
+        }
+        if (number % 20 == 0) {
+          checkpoint.flag();
+        }
+      });
+    }));
+  }
+
+  private Router createEventBusRouter() {
+    PermittedOptions permittedOptions = new PermittedOptions()
+      .setAddress(EVENTBUS_ADDRESS);
+
+    SockJSBridgeOptions bridgeOptions = new SockJSBridgeOptions()
+      .addInboundPermitted(permittedOptions)
+      .addOutboundPermitted(permittedOptions)
+      .setPingTimeout(60000);  // should not interfere with test
+    return SockJSHandler.create(vertx).bridge(bridgeOptions, new TestBridgeEventHandler());
+  }
+
+
+  static class TestBridgeEventHandler implements Handler<BridgeEvent> {
+    @Override
+    public void handle(BridgeEvent event) {
+      JsonObject rawMessage = event.getRawMessage();
+      log.debug("Bridge event type=" + event.type() + ", raw message=" + encode(rawMessage));
+      event.complete(true);
+    }
+
+    private String encode(JsonObject rawMessage) {
+      return rawMessage != null ? rawMessage.encode() : "null";
+    }
+
+  }
+}

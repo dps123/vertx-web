@@ -13,6 +13,7 @@ package io.vertx.ext.web.client.spi;
 import io.netty.handler.codec.http.cookie.Cookie;
 import io.vertx.ext.web.client.impl.CookieStoreImpl;
 
+
 /**
  * A cookie store that manages cookies for a single user; received for different domains and valid for different paths.
  *
@@ -41,6 +42,20 @@ public interface CookieStore {
    */
   Iterable<Cookie> get(Boolean ssl, String domain, String path);
 
+  default Iterable<Cookie> get(String domain, String path) {
+    return get((Boolean)null, domain, path);
+  }
+
+  default Cookie get(String name, String domain, String path) {
+    Iterable<Cookie> cookies = get((Boolean) null, domain, path);
+    for (Cookie cookie : cookies) {
+      if (cookie.name().equals(name)) {
+        return cookie;
+      }
+    }
+    return null;
+  }
+
   /**
    * Add a cookie to this {@code CookieStore}.
    * <p>
@@ -50,6 +65,7 @@ public interface CookieStore {
    * @return a reference to this, so the API can be used fluently
    */
   CookieStore put(Cookie cookie);
+
   /**
    * Removes a previously added cookie.
    *

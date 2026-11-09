@@ -32,17 +32,17 @@
 
 package io.vertx.ext.web.handler.sockjs.impl;
 
-import io.vertx.core.AsyncResult;
+import io.vertx.core.Future;
 import io.vertx.core.Handler;
 import io.vertx.core.Vertx;
+import io.vertx.core.VertxException;
 import io.vertx.core.buffer.Buffer;
 import io.vertx.core.http.HttpHeaders;
 import io.vertx.core.http.HttpServerRequest;
 import io.vertx.core.http.HttpServerResponse;
 import io.vertx.core.http.HttpVersion;
-import io.vertx.core.impl.NoStackTraceThrowable;
-import io.vertx.core.impl.logging.Logger;
-import io.vertx.core.impl.logging.LoggerFactory;
+import io.vertx.core.internal.logging.Logger;
+import io.vertx.core.internal.logging.LoggerFactory;
 import io.vertx.core.shareddata.LocalMap;
 import io.vertx.ext.web.RequestBody;
 import io.vertx.ext.web.Router;
@@ -144,7 +144,7 @@ class XhrTransport extends BaseTransport {
       // as well as resource cleanup
       LOG.error("No BodyHandler was executed on the route. Please add a BodyHandler before the SockJS handler.");
 
-      rc.fail(500, new NoStackTraceThrowable("BodyHandler is required to process POST requests"));
+      rc.fail(500, VertxException.noStackTrace("BodyHandler is required to process POST requests"));
       return;
     }
 
@@ -206,10 +206,11 @@ class XhrTransport extends BaseTransport {
     }
 
     @Override
-    public void sendFrame(String body, Handler<AsyncResult<Void>> handler) {
+    public Future<Void> sendFrame(String body) {
       super.beforeSend();
-      rc.response().write(body + "\n", handler);
+      Future<Void> fut = rc.response().write(body + "\n");
       close();
+      return fut;
     }
 
     @Override
@@ -219,7 +220,7 @@ class XhrTransport extends BaseTransport {
         try {
           session.resetListener();
           rc.response().end();
-          rc.response().close();
+          rc.request().connection().close();
           closed = true;
         } catch (IllegalStateException e) {
           // Underlying connection might already be closed - that's fine
@@ -240,7 +241,7 @@ class XhrTransport extends BaseTransport {
     }
 
     @Override
-    public void sendFrame(String body, Handler<AsyncResult<Void>> handler) {
+    public Future<Void> sendFrame(String body) {
       boolean hr = headersWritten;
       super.beforeSend();
       if (!hr) {
@@ -248,11 +249,12 @@ class XhrTransport extends BaseTransport {
       }
       String sbody = body + "\n";
       Buffer buff = buffer(sbody);
-      rc.response().write(buff, handler);
+      Future<Void> fut = rc.response().write(buff);
       bytesSent += buff.length();
       if (bytesSent >= maxBytesStreaming) {
         close();
       }
+      return fut;
     }
 
     @Override
@@ -262,7 +264,7 @@ class XhrTransport extends BaseTransport {
         session.resetListener();
         try {
           rc.response().end();
-          rc.response().close();
+          rc.request().connection().close();
           closed = true;
         } catch (IllegalStateException e) {
           // Underlying connection might already be closed - that's fine

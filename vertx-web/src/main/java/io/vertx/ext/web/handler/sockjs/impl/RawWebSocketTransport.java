@@ -36,9 +36,9 @@ import io.vertx.core.*;
 import io.vertx.core.buffer.Buffer;
 import io.vertx.core.http.HttpServerRequest;
 import io.vertx.core.http.ServerWebSocket;
-import io.vertx.core.impl.VertxInternal;
+import io.vertx.core.internal.VertxInternal;
+import io.vertx.core.internal.net.NetSocketInternal;
 import io.vertx.core.net.SocketAddress;
-import io.vertx.core.net.impl.ConnectionBase;
 import io.vertx.ext.web.Router;
 import io.vertx.ext.web.RoutingContext;
 import io.vertx.ext.web.handler.PlatformHandler;
@@ -47,8 +47,7 @@ import io.vertx.ext.web.handler.sockjs.SockJSHandlerOptions;
 import io.vertx.ext.web.handler.sockjs.SockJSSocket;
 import io.vertx.ext.web.impl.Origin;
 
-import static io.vertx.core.http.HttpHeaders.*;
-import static io.vertx.ext.web.impl.Utils.canUpgradeToWebsocket;
+import static io.vertx.core.http.HttpHeaders.ALLOW;
 
 /**
  * @author <a href="http://tfox.org">Tim Fox</a>
@@ -76,14 +75,14 @@ class RawWebSocketTransport {
 
   private void handleGet(RoutingContext ctx) {
     HttpServerRequest req = ctx.request();
-    if (!canUpgradeToWebsocket(req)) {
+    if (!req.canUpgradeToWebSocket()) {
       ctx.response().setStatusCode(400);
       ctx.response().end("Can \"Upgrade\" only to \"WebSocket\".");
       return;
     }
 
     if (!Origin.check(origin, ctx)) {
-      ctx.fail(403, new IllegalStateException("Invalid Origin"));
+      ctx.fail(403, new VertxException("Invalid Origin", true));
       return;
     }
 
@@ -147,7 +146,7 @@ class RawWebSocketTransport {
         return ws.writeBinaryMessage(data);
       }
       final Promise<Void> promise = ((VertxInternal) vertx).promise();
-      vertx.runOnContext(v -> promise.fail(ConnectionBase.CLOSED_EXCEPTION));
+      vertx.runOnContext(v -> promise.fail(NetSocketInternal.CLOSED_EXCEPTION));
       return promise.future();
     }
 
@@ -157,7 +156,7 @@ class RawWebSocketTransport {
         return ws.writeTextMessage(data);
       }
       final Promise<Void> promise = ((VertxInternal) vertx).promise();
-      vertx.runOnContext(v -> promise.fail(ConnectionBase.CLOSED_EXCEPTION));
+      vertx.runOnContext(v -> promise.fail(NetSocketInternal.CLOSED_EXCEPTION));
       return promise.future();
     }
 

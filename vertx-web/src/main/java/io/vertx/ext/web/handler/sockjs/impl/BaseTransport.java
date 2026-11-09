@@ -40,12 +40,12 @@ import io.vertx.core.MultiMap;
 import io.vertx.core.Vertx;
 import io.vertx.core.http.HttpServerRequest;
 import io.vertx.core.http.HttpServerResponse;
-import io.vertx.core.impl.logging.Logger;
-import io.vertx.core.impl.logging.LoggerFactory;
+import io.vertx.core.internal.logging.Logger;
+import io.vertx.core.internal.logging.LoggerFactory;
 import io.vertx.core.json.JsonArray;
 import io.vertx.core.json.JsonObject;
 import io.vertx.core.shareddata.LocalMap;
-import io.vertx.ext.auth.VertxContextPRNG;
+import io.vertx.ext.auth.prng.VertxContextPRNG;
 import io.vertx.ext.web.RoutingContext;
 import io.vertx.ext.web.handler.PlatformHandler;
 import io.vertx.ext.web.handler.SecurityPolicyHandler;
@@ -113,13 +113,15 @@ class BaseTransport {
     }
     protected void addCloseHandler(HttpServerResponse resp, final SockJSSession session) {
       resp.closeHandler(v -> {
-          if (LOG.isTraceEnabled()) {
-            LOG.trace("Connection closed (from client?), closing session");
+          if (!resp.ended()) {
+            if (LOG.isTraceEnabled()) {
+              LOG.trace("Connection closed (from client?), closing session");
+            }
+            // Connection has been closed from the client or network error so
+            // we remove the session
+            session.shutdown();
+            closed = true;
           }
-          // Connection has been closed from the client or network error so
-          // we remove the session
-          session.shutdown();
-          closed = true;
       });
     }
 

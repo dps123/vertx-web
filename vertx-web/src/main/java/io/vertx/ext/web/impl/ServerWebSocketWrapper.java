@@ -1,36 +1,36 @@
 package io.vertx.ext.web.impl;
 
 import io.vertx.codegen.annotations.Nullable;
-import io.vertx.core.AsyncResult;
 import io.vertx.core.Future;
 import io.vertx.core.Handler;
 import io.vertx.core.MultiMap;
 import io.vertx.core.buffer.Buffer;
 import io.vertx.core.http.ServerWebSocket;
-import io.vertx.core.http.WebSocketBase;
+import io.vertx.core.http.WebSocket;
 import io.vertx.core.http.WebSocketFrame;
+import io.vertx.core.net.HostAndPort;
 import io.vertx.core.net.SocketAddress;
 
 import javax.net.ssl.SSLPeerUnverifiedException;
 import javax.net.ssl.SSLSession;
-import javax.security.cert.X509Certificate;
 import java.security.cert.Certificate;
+import java.time.Duration;
 import java.util.List;
 
 public class ServerWebSocketWrapper implements ServerWebSocket {
   private final ServerWebSocket delegate;
-  private final String host;
+  private final HostAndPort authority;
   private final String scheme;
   private final boolean isSsl;
   private final SocketAddress remoteAddress;
 
   public ServerWebSocketWrapper(ServerWebSocket delegate,
-                                String host,
+                                HostAndPort authority,
                                 String scheme,
                                 boolean isSsl,
                                 SocketAddress remoteAddress) {
     this.delegate = delegate;
-    this.host = host;
+    this.authority = authority;
     this.scheme = scheme;
     this.isSsl = isSsl;
     this.remoteAddress = remoteAddress;
@@ -48,11 +48,6 @@ public class ServerWebSocketWrapper implements ServerWebSocket {
   }
 
   @Override
-  public void write(Buffer data, Handler<AsyncResult<Void>> handler) {
-    delegate.write(data, handler);
-  }
-
-  @Override
   public ServerWebSocket handler(Handler<Buffer> handler) {
     delegate.handler(handler);
     return this;
@@ -61,12 +56,6 @@ public class ServerWebSocketWrapper implements ServerWebSocket {
   @Override
   public ServerWebSocket pause() {
     delegate.pause();
-    return this;
-  }
-
-  @Override
-  public ServerWebSocket resume() {
-    delegate.resume();
     return this;
   }
 
@@ -135,20 +124,8 @@ public class ServerWebSocketWrapper implements ServerWebSocket {
   }
 
   @Override
-  public ServerWebSocket writeFrame(WebSocketFrame frame, Handler<AsyncResult<Void>> handler) {
-    delegate.writeFrame(frame, handler);
-    return this;
-  }
-
-  @Override
   public Future<Void> writeFinalTextFrame(String text) {
     return delegate.writeFinalTextFrame(text);
-  }
-
-  @Override
-  public ServerWebSocket writeFinalTextFrame(String text, Handler<AsyncResult<Void>> handler) {
-    delegate.writeFinalTextFrame(text, handler);
-    return this;
   }
 
   @Override
@@ -157,20 +134,8 @@ public class ServerWebSocketWrapper implements ServerWebSocket {
   }
 
   @Override
-  public ServerWebSocket writeFinalBinaryFrame(Buffer data, Handler<AsyncResult<Void>> handler) {
-    delegate.writeFinalBinaryFrame(data, handler);
-    return this;
-  }
-
-  @Override
   public Future<Void> writeBinaryMessage(Buffer data) {
     return delegate.writeBinaryMessage(data);
-  }
-
-  @Override
-  public ServerWebSocket writeBinaryMessage(Buffer data, Handler<AsyncResult<Void>> handler) {
-    delegate.writeBinaryMessage(data, handler);
-    return this;
   }
 
   @Override
@@ -179,26 +144,8 @@ public class ServerWebSocketWrapper implements ServerWebSocket {
   }
 
   @Override
-  public ServerWebSocket writeTextMessage(String text, Handler<AsyncResult<Void>> handler) {
-    delegate.writeTextMessage(text, handler);
-    return this;
-  }
-
-  @Override
-  public WebSocketBase writePing(Buffer data, Handler<AsyncResult<Void>> handler) {
-    delegate.writePing(data, handler);
-    return this;
-  }
-
-  @Override
   public Future<Void> writePing(Buffer data) {
     return delegate.writePing(data);
-  }
-
-  @Override
-  public WebSocketBase writePong(Buffer data, Handler<AsyncResult<Void>> handler) {
-    delegate.writePong(data, handler);
-    return this;
   }
 
   @Override
@@ -213,25 +160,36 @@ public class ServerWebSocketWrapper implements ServerWebSocket {
   }
 
   @Override
+  public WebSocket shutdownHandler(Handler<Void> handler) {
+    delegate.shutdownHandler(handler);
+    return this;
+  }
+
+  @Override
+  public Future<Void> shutdown(Duration timeout, short statusCode, @Nullable String reason) {
+    return delegate.shutdown(timeout, statusCode, reason);
+  }
+
+  @Override
   public ServerWebSocket frameHandler(Handler<WebSocketFrame> handler) {
     delegate.frameHandler(handler);
     return this;
   }
 
   @Override
-  public WebSocketBase textMessageHandler(@Nullable Handler<String> handler) {
+  public ServerWebSocket textMessageHandler(@Nullable Handler<String> handler) {
     delegate.textMessageHandler(handler);
     return this;
   }
 
   @Override
-  public WebSocketBase binaryMessageHandler(@Nullable Handler<Buffer> handler) {
+  public ServerWebSocket binaryMessageHandler(@Nullable Handler<Buffer> handler) {
     delegate.binaryMessageHandler(handler);
     return this;
   }
 
   @Override
-  public WebSocketBase pongHandler(@Nullable Handler<Buffer> handler) {
+  public ServerWebSocket pongHandler(@Nullable Handler<Buffer> handler) {
     delegate.pongHandler(handler);
     return this;
   }
@@ -242,18 +200,13 @@ public class ServerWebSocketWrapper implements ServerWebSocket {
   }
 
   @Override
-  public void end(Handler<AsyncResult<Void>> handler) {
-    delegate.end(handler);
-  }
-
-  @Override
   public @Nullable String scheme() {
     return scheme;
   }
 
   @Override
-  public @Nullable String host() {
-    return host;
+  public @Nullable HostAndPort authority() {
+    return authority;
   }
 
   @Override
@@ -269,61 +222,6 @@ public class ServerWebSocketWrapper implements ServerWebSocket {
   @Override
   public @Nullable String query() {
     return delegate.query();
-  }
-
-  @Override
-  public void accept() {
-    delegate.accept();
-  }
-
-  @Override
-  public void reject() {
-    delegate.reject();
-  }
-
-  @Override
-  public void reject(int status) {
-    delegate.reject(status);
-  }
-
-  @Override
-  public void setHandshake(Future<Integer> future, Handler<AsyncResult<Integer>> handler) {
-    delegate.setHandshake(future, handler);
-  }
-
-  @Override
-  public Future<Integer> setHandshake(Future<Integer> future) {
-    return delegate.setHandshake(future);
-  }
-
-  @Override
-  public Future<Void> close() {
-    return delegate.close();
-  }
-
-  @Override
-  public void close(Handler<AsyncResult<Void>> handler) {
-    delegate.close(handler);
-  }
-
-  @Override
-  public Future<Void> close(short statusCode) {
-    return delegate.close(statusCode);
-  }
-
-  @Override
-  public void close(short statusCode, Handler<AsyncResult<Void>> handler) {
-    delegate.close(statusCode, handler);
-  }
-
-  @Override
-  public Future<Void> close(short statusCode, @Nullable String reason) {
-    return delegate.close(statusCode, reason);
-  }
-
-  @Override
-  public void close(short statusCode, @Nullable String reason, Handler<AsyncResult<Void>> handler) {
-    delegate.close(statusCode, reason, handler);
   }
 
   @Override
@@ -349,12 +247,6 @@ public class ServerWebSocketWrapper implements ServerWebSocket {
   @Override
   public SSLSession sslSession() {
     return delegate.sslSession();
-  }
-
-  @Override
-  @Deprecated
-  public X509Certificate[] peerCertificateChain() throws SSLPeerUnverifiedException {
-    return delegate.peerCertificateChain();
   }
 
   @Override

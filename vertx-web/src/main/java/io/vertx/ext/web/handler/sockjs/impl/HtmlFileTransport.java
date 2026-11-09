@@ -32,14 +32,14 @@
 
 package io.vertx.ext.web.handler.sockjs.impl;
 
-import io.vertx.core.AsyncResult;
+import io.vertx.core.Future;
 import io.vertx.core.Handler;
 import io.vertx.core.Vertx;
 import io.vertx.core.buffer.Buffer;
 import io.vertx.core.http.HttpHeaders;
 import io.vertx.core.http.HttpServerRequest;
-import io.vertx.core.impl.logging.Logger;
-import io.vertx.core.impl.logging.LoggerFactory;
+import io.vertx.core.internal.logging.Logger;
+import io.vertx.core.internal.logging.LoggerFactory;
 import io.vertx.core.shareddata.LocalMap;
 import io.vertx.ext.web.Router;
 import io.vertx.ext.web.RoutingContext;
@@ -138,7 +138,7 @@ class HtmlFileTransport extends BaseTransport {
     }
 
     @Override
-    public void sendFrame(String body, Handler<AsyncResult<Void>> handler) {
+    public Future<Void> sendFrame(String body) {
       if (LOG.isTraceEnabled()) LOG.trace("HtmlFile, sending frame");
       if (!headersWritten) {
         String htmlFile = HTML_FILE_TEMPLATE.replace("{{ callback }}", callback);
@@ -154,13 +154,14 @@ class HtmlFileTransport extends BaseTransport {
         body +
         "\");\n</script>\r\n";
       Buffer buff = buffer(sb);
-      rc.response().write(buff, handler);
+      Future<Void> fut = rc.response().write(buff);
       bytesSent += buff.length();
       if (bytesSent >= maxBytesStreaming) {
         if (LOG.isTraceEnabled()) LOG.trace("More than maxBytes sent so closing connection");
         // Reset and close the connection
         close();
       }
+      return fut;
     }
 
     @Override
@@ -169,7 +170,7 @@ class HtmlFileTransport extends BaseTransport {
         try {
           session.resetListener();
           rc.response().end();
-          rc.response().close();
+          rc.request().connection().close();
           closed = true;
         } catch (IllegalStateException e) {
           // Underlying connection might already be closed - that's fine

@@ -89,17 +89,6 @@ public interface SockJSSocket extends ReadStream<Buffer>, WriteStream<Buffer> {
     return write(Buffer.buffer(data));
   }
 
-  default void write(String data, Handler<AsyncResult<Void>> handler) {
-    write(data)
-      .onComplete(handler);
-  }
-
-  @Override
-  default void write(Buffer data, Handler<AsyncResult<Void>> handler) {
-    write(data)
-      .onComplete(handler);
-  }
-
   @Override
   SockJSSocket setWriteQueueMaxSize(int maxSize);
 

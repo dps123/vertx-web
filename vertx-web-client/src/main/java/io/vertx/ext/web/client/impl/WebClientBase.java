@@ -15,23 +15,23 @@
  */
 package io.vertx.ext.web.client.impl;
 
-import io.vertx.core.AsyncResult;
+import io.vertx.core.Future;
 import io.vertx.core.Handler;
 import io.vertx.core.MultiMap;
 import io.vertx.core.VertxException;
 import io.vertx.core.buffer.Buffer;
 import io.vertx.core.http.HttpClient;
-import io.vertx.core.http.HttpClientOptions;
 import io.vertx.core.http.HttpHeaders;
 import io.vertx.core.http.HttpMethod;
 import io.vertx.core.http.RequestOptions;
-import io.vertx.core.http.impl.HttpClientInternal;
+import io.vertx.core.internal.ContextInternal;
+import io.vertx.core.internal.http.HttpClientInternal;
+import io.vertx.core.net.Address;
+import io.vertx.core.net.ClientSSLOptions;
 import io.vertx.core.net.ProxyOptions;
 import io.vertx.core.net.SocketAddress;
 import io.vertx.ext.web.client.HttpRequest;
-import io.vertx.ext.web.client.HttpResponse;
-import io.vertx.ext.web.client.WebClientOptions;
-import io.vertx.ext.web.client.impl.predicate.PredicateInterceptor;
+import io.vertx.ext.web.client.WebClientConfig;
 import io.vertx.ext.web.codec.impl.BodyCodecImpl;
 import io.vertx.uritemplate.ExpandOptions;
 import io.vertx.uritemplate.UriTemplate;
@@ -44,15 +44,15 @@ import java.util.concurrent.CopyOnWriteArrayList;
 /**
  * @author <a href="mailto:julien@julienviet.com">Julien Viet</a>
  */
-public class WebClientBase implements WebClientInternal {
+public class WebClientBase<C extends WebClientBase<C>> implements WebClientInternal {
 
   final HttpClient client;
-  final WebClientOptions options;
+  final WebClientConfig options;
   final List<Handler<HttpContext<?>>> interceptors;
 
-  public WebClientBase(HttpClient client, WebClientOptions options) {
+  public WebClientBase(HttpClient client, WebClientConfig options) {
 
-    options = new WebClientOptions(options);
+    options = new WebClientConfig(options);
     if (options.getTemplateExpandOptions() == null) {
       options.setTemplateExpandOptions(new ExpandOptions());
     }
@@ -60,14 +60,11 @@ public class WebClientBase implements WebClientInternal {
     this.client = client;
     this.options = options;
     this.interceptors = new CopyOnWriteArrayList<>();
-
-    // Add base interceptor
-    addInterceptor(new PredicateInterceptor());
   }
 
   WebClientBase(WebClientBase webClient) {
     this.client = webClient.client;
-    this.options = new WebClientOptions(webClient.options);
+    this.options = new WebClientConfig(webClient.options);
     this.interceptors = new CopyOnWriteArrayList<>(webClient.interceptors);
   }
 
@@ -84,6 +81,16 @@ public class WebClientBase implements WebClientInternal {
 
   @Override
   public HttpRequest<Buffer> request(HttpMethod method, SocketAddress serverAddress, RequestOptions requestOptions) {
+    requestOptions = new RequestOptions(requestOptions);
+    requestOptions.setMethod(method);
+    if (serverAddress != null) {
+      requestOptions.setServer(serverAddress);
+    }
+    return request(requestOptions);
+  }
+
+  @Override
+  public HttpRequest<Buffer> request(RequestOptions requestOptions) {
     Integer port = requestOptions.getPort();
     if (port == null) {
       port = options.getDefaultPort();
@@ -92,9 +99,20 @@ public class WebClientBase implements WebClientInternal {
     if (host == null) {
       host = options.getDefaultHost();
     }
-    HttpRequestImpl<Buffer> request = request(method, serverAddress, port, host, requestOptions.getURI());
+    Address address = requestOptions.getServer();
+    HttpMethod method = requestOptions.getMethod();
+    HttpRequestImpl<Buffer> request = new HttpRequestImpl<>(this, method, address, options.isSsl(), port, host,
+      requestOptions.getURI(), BodyCodecImpl.BUFFER, options.isFollowRedirects(), buildProxyOptions(options), buildHeaders(options));
     request.ssl(requestOptions.isSsl());
-    request.timeout(requestOptions.getTimeout());
+    if (requestOptions.getTimeout() >= 0L) {
+      request.timeout(requestOptions.getTimeout());
+    }
+    if (requestOptions.getConnectTimeout() >= 0L) {
+      request.connectTimeout(requestOptions.getConnectTimeout());
+    }
+    if (requestOptions.getIdleTimeout() >= 0L) {
+      request.idleTimeout(requestOptions.getIdleTimeout());
+    }
     request.followRedirects(requestOptions.getFollowRedirects());
     ProxyOptions proxyOptions = requestOptions.getProxyOptions();
     if (proxyOptions != null) {
@@ -145,19 +163,25 @@ public class WebClientBase implements WebClientInternal {
   }
 
   @Override
-  public WebClientInternal addInterceptor(Handler<HttpContext<?>> interceptor) {
+  public C addInterceptor(Handler<HttpContext<?>> interceptor) {
     // If a web client is constructed using another client, interceptors could get added twice.
     if (interceptors.stream().anyMatch(i -> i.getClass() == interceptor.getClass())) {
       throw new IllegalStateException(String.format("Client already contains a %s interceptor", interceptor.getClass()));
     }
     interceptors.add(interceptor);
-    return this;
+    return (C) this;
   }
 
   @Override
-  public <T> HttpContext<T> createContext(Handler<AsyncResult<HttpResponse<T>>> handler) {
+  public <T> HttpContext<T> createContext(ContextInternal context) {
     HttpClientInternal client = (HttpClientInternal) this.client;
-    return new HttpContext<>(client, options, interceptors, handler);
+    return new HttpContext<>(context, client, options, interceptors, context.promise());
+  }
+
+  @Override
+  public Future<Boolean> updateSSLOptions(ClientSSLOptions options, boolean force) {
+    HttpClientInternal client = (HttpClientInternal) this.client;
+    return client.updateSSLOptions(options, force);
   }
 
   @Override
@@ -165,7 +189,7 @@ public class WebClientBase implements WebClientInternal {
     client.close();
   }
 
-  private static MultiMap buildHeaders(WebClientOptions options) {
+  private static MultiMap buildHeaders(WebClientConfig options) {
     if (options.isUserAgentEnabled()) {
       return HttpHeaders.set(HttpHeaders.USER_AGENT, options.getUserAgent());
     } else {
@@ -173,9 +197,9 @@ public class WebClientBase implements WebClientInternal {
     }
   }
 
-  private static ProxyOptions buildProxyOptions(WebClientOptions options) {
-    if (options.getProxyOptions() !=  null) {
-      return new ProxyOptions(options.getProxyOptions());
+  private static ProxyOptions buildProxyOptions(WebClientConfig options) {
+    if (options.getTcpConfig().getProxyOptions() !=  null) {
+      return new ProxyOptions(options.getTcpConfig().getProxyOptions());
     } else {
       return null;
     }

@@ -32,15 +32,15 @@
 
 package io.vertx.ext.web.handler.sockjs.impl;
 
-import io.vertx.core.AsyncResult;
+import io.vertx.core.Future;
 import io.vertx.core.Handler;
 import io.vertx.core.Vertx;
+import io.vertx.core.VertxException;
 import io.vertx.core.http.HttpHeaders;
 import io.vertx.core.http.HttpServerRequest;
-import io.vertx.core.impl.NoStackTraceThrowable;
-import io.vertx.core.impl.logging.Logger;
-import io.vertx.core.impl.logging.LoggerFactory;
-import io.vertx.core.net.impl.URIDecoder;
+import io.vertx.core.internal.logging.Logger;
+import io.vertx.core.internal.logging.LoggerFactory;
+import io.vertx.core.internal.net.RFC3986;
 import io.vertx.core.shareddata.LocalMap;
 import io.vertx.ext.web.RequestBody;
 import io.vertx.ext.web.Router;
@@ -123,7 +123,7 @@ class JsonPTransport extends BaseTransport {
       // we could just add an ad-hoc body handler but this can lead to DDoS attacks
       // and it doesn't really cover all the uploads, such as multipart, etc...
       // as well as resource cleanup
-      rc.fail(500, new NoStackTraceThrowable("BodyHandler is required to process POST requests"));
+      rc.fail(500, VertxException.noStackTrace("BodyHandler is required to process POST requests"));
       return;
     }
 
@@ -147,7 +147,7 @@ class JsonPTransport extends BaseTransport {
     }
 
     if (urlEncoded) {
-      stringBody = URIDecoder.decodeURIComponent(stringBody, true).substring(2);
+      stringBody = RFC3986.decodeURIComponent(stringBody, true).substring(2);
     }
 
     if (!session.handleMessages(stringBody)) {
@@ -173,7 +173,7 @@ class JsonPTransport extends BaseTransport {
     }
 
     @Override
-    public void sendFrame(String body, Handler<AsyncResult<Void>> handler) {
+    public Future<Void> sendFrame(String body) {
       if (LOG.isTraceEnabled()) LOG.trace("JsonP, sending frame");
 
       if (!headersWritten) {
@@ -196,8 +196,9 @@ class JsonPTransport extends BaseTransport {
 
       //End the response and close the HTTP connection
 
-      rc.response().write(sb, handler);
+      Future<Void> fut = rc.response().write(sb);
       close();
+      return fut;
     }
 
     @Override
@@ -206,7 +207,7 @@ class JsonPTransport extends BaseTransport {
         try {
           session.resetListener();
           rc.response().end();
-          rc.response().close();
+          rc.request().connection().close();
           closed = true;
         } catch (IllegalStateException e) {
           // Underlying connection might already be closed - that's fine

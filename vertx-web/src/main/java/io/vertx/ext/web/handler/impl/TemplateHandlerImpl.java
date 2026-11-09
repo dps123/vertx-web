@@ -16,12 +16,12 @@
 package io.vertx.ext.web.handler.impl;
 
 import io.vertx.core.http.HttpHeaders;
-import io.vertx.core.json.JsonObject;
+import io.vertx.core.internal.net.RFC3986;
 import io.vertx.ext.web.LanguageHeader;
+import io.vertx.ext.web.RoutingContext;
+import io.vertx.ext.web.common.template.TemplateEngine;
 import io.vertx.ext.web.handler.TemplateHandler;
 import io.vertx.ext.web.impl.Utils;
-import io.vertx.ext.web.common.template.TemplateEngine;
-import io.vertx.ext.web.RoutingContext;
 
 import java.util.Locale;
 
@@ -46,12 +46,14 @@ public class TemplateHandlerImpl implements TemplateHandler {
   @Override
   public void handle(RoutingContext context) {
     String file = Utils.pathOffset(context.normalizedPath(), context);
+    file = RFC3986.decodeURIComponent(file, false);
+    file = RFC3986.removeDotSegments(file.replace('\\', '/'));
     if (file.endsWith("/") && null != indexTemplate) {
       file += indexTemplate;
     }
     // files are always normalized (start with /)
     // however if there's no base strip / to avoid making the path absolute
-    if (templateDirectory == null || "".equals(templateDirectory)) {
+    if (templateDirectory == null || templateDirectory.isEmpty()) {
       // strip the leading slash from the filename
       file = file.substring(1);
     }
@@ -72,18 +74,18 @@ public class TemplateHandlerImpl implements TemplateHandler {
       context.request().pause();
     }
     // render using the engine
-    engine.render(new JsonObject(context.data()), templateDirectory + file, res -> {
-      if (res.succeeded()) {
+    engine.render(context.data(), templateDirectory + file)
+      .onSuccess(data -> {
         if (!context.request().isEnded()) {
           context.request().resume();
         }
-        context.response().putHeader(HttpHeaders.CONTENT_TYPE, contentType).end(res.result());
-      } else {
+        context.response().putHeader(HttpHeaders.CONTENT_TYPE, contentType).end(data);
+      })
+      .onFailure(err -> {
         if (!context.request().isEnded()) {
           context.request().resume();
         }
-        context.fail(res.cause());
-      }
+        context.fail(err);
     });
   }
 

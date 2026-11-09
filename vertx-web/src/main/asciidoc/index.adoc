@@ -44,7 +44,7 @@ Some of the key features of Vert.x-Web include:
 * Favicon handling
 * Template support for server side rendering, including support for the following template engines out of the box:
 ** Handlebars
-** Jade,
+** Pug,
 ** MVEL
 ** Thymeleaf
 ** Apache FreeMarker
@@ -166,6 +166,41 @@ Once we've set up the handler, we set the request handler of the HTTP server to 
 to {@link io.vertx.ext.web.Router#handle}.
 
 So, that's the basics. Now we'll look at things in more detail:
+
+== Raw path vs normalized path
+
+When working with routes, it is important to understand that
+`HttpServerRequest#path()` returns the *raw* request path as it was
+sent by the client. This value may still contain segments such as
+`.` or `..`, or repeated `/` characters.
+
+Vert.x Web internally uses a *normalized* version of the path when
+matching routes. To obtain this normalized value inside a handler,
+use `RoutingContext#normalizedPath()`:
+
+[source,java]
+----
+router.route("/secured/*").handler(ctx -> {
+  // Raw path as sent by the client (may contain "..")
+  String raw = ctx.request().path();
+
+  // Normalized path as used by the router for matching
+  String normalized = ctx.normalizedPath();
+
+  // For security-sensitive checks, prefer the normalized path
+  if ("/secured/data".equals(normalized)) {
+    // ...
+  }
+});
+----
+
+[NOTE]
+====
+For logging or authorization decisions that depend on the request path,
+prefer `RoutingContext#normalizedPath()` instead of `HttpServerRequest#path()`,
+to avoid surprises with paths like `/secured/../secured/data`.
+====
+
 
 == Handling requests and calling the next handler
 
@@ -308,6 +343,32 @@ A parameter is not required to be a path segment. For example path parameters li
 ----
 
 Note: You can also capture `*` as path param `*`.
+
+=== Typed path parameters
+
+A path parameter can be restricted to a known type by appending `::` followed by the type name to the parameter:
+
+[source,$lang]
+----
+{@link examples.WebExamples#example4_3}
+----
+
+Typed path parameters only validate the captured value when matching a route. They do not convert the value to a Java
+object: the primary source of interaction in the API remains the `String` value returned by
+{@link io.vertx.ext.web.RoutingContext#pathParam}. When the captured value does not match the declared type, the router
+carries on with the remaining routes (which usually results in a `404` response).
+
+Known types are:
+
+* `integer` - an integer number, e.g.: `42`, `-7`. Note that the value is not bound to a Java type,
+  so it may overflow e.g.: an `Integer`, it is up to the application to convert it appropriately.
+* `number` - an integer or decimal number, e.g.: `3.14`
+* `boolean` - `true` or `false` (lower case)
+* `uuid` - a UUID, e.g.: `123e4567-e89b-12d3-a456-426614174000`
+
+Using `::` with an unknown type name, e.g.: `/:id::foo`, throws an `IllegalArgumentException`.
+
+For validation beyond these simple types use a regular expression route or the `vertx-web-validation` module.
 
 == Routing with regular expressions
 
@@ -872,25 +933,24 @@ The usage of this handler requires that it is installed as soon as possible. The
 {@link examples.WebExamples#example27}
 ----
 
-NOTE: Uploads can be a source of DDoS attacks, in order to reduce the attack surface, it is recommended to
+CAUTION: Uploads can be a source of DDoS attacks, in order to reduce the attack surface, it is recommended to
 set sensible limits on {@link io.vertx.ext.web.handler.BodyHandler#setBodyLimit} (e.g.: 10mb for general uploads or
 100kb for JSON).
 
 === Getting the request body
 
-If you know the request body is JSON, then you can use {@link io.vertx.ext.web.RoutingContext#getBodyAsJson},
-if you know it's a string you can use {@link io.vertx.ext.web.RoutingContext#getBodyAsString}, or to
-retrieve it as a buffer use {@link io.vertx.ext.web.RoutingContext#getBody()}.
+If you know the request body is JSON, then you can use {@link io.vertx.ext.web.RoutingContext#body()} and use the right getter (e.g.: `.asJsonObject()`).
+if you know it's a string you can use `.asString()`, or to
+retrieve it as a buffer use `.buffer()`.
 
 === Limiting body size
 
-To limit the size of a request body, create the body handler then use {@link io.vertx.ext.web.handler.BodyHandler#setBodyLimit(long)}
-to specifying the maximum body size, in bytes. This is useful to avoid running out of memory with very large bodies.
+To limit the size of a request body, create the body handler then use {@link io.vertx.ext.web.handler.BodyHandler#setBodyLimit(long)} to specify the maximum body size, in bytes.
+This is useful to avoid running out of memory with very large bodies.
 
-If an attempt to send a body greater than the maximum size is made, an HTTP status code of 413 - `Request Entity Too Large`,
-will be sent.
+If an attempt to send a body greater than the maximum size is made, an HTTP status code of 413 - `Request Entity Too Large`, will be sent.
 
-There is no body limit by default.
+By default, the body size is limited to 10 megabytes.
 
 === Merging form attributes
 
@@ -917,18 +977,29 @@ Here's an example:
 Each file upload is described by a {@link io.vertx.ext.web.FileUpload} instance, which allows various properties
 such as the name, file-name and size to be accessed.
 
+=== Housekeeping the uploaded files directory
+
+The {@link io.vertx.ext.web.handler.BodyHandler} can be configured to clean the uploaded files directory:
+
+[source,$lang]
+----
+{@link examples.WebExamples#housekeepingUploadDir}
+----
+
+This will delete any file uploaded as part of a request when the corresponding response has been sent.
+
 == Handling cookies
 
 Vert.x-Web has out of the box cookies support.
 
 === Manipulating cookies
 
-You use {@link io.vertx.ext.web.RoutingContext#getCookie(String)} to retrieve
-a cookie by name, or use {@link io.vertx.ext.web.RoutingContext#cookieMap()} to retrieve the entire set.
+You use {@link io.vertx.core.http.HttpServerRequest#cookies(String)} to retrieve
+a cookie by name, or use {@link io.vertx.core.http.HttpServerRequest#cookies()} to retrieve the entire set.
 
-To remove a cookie, use {@link io.vertx.ext.web.RoutingContext#removeCookie(String)}.
+To remove a cookie, use {@link io.vertx.core.http.HttpServerResponse#removeCookie(String)}.
 
-To add a cookie use {@link io.vertx.ext.web.RoutingContext#addCookie(Cookie)}.
+To add a cookie use {@link io.vertx.core.http.HttpServerResponse#addCookie(Cookie)}.
 
 The set of cookies will be written back in the response automatically when the response headers are written so the
 browser can store them.
@@ -975,7 +1046,7 @@ This allows to control the state before completing the response like:
 
 [source,$lang]
 ----
-{@link examples.WebExamples#example78}
+{@link examples.WebExamples#exampleSessionFlushOperation}
 ----
 
 Vert.x Session Handler state by default uses a cookie to store session ID. Session ID is a unique string, used to
@@ -1080,8 +1151,7 @@ Here are some examples of creating a clustered {@link io.vertx.ext.web.sstore.Se
 Other stores are also available, these stores can be used by importing the correct jar
 to the project. One example of such stores is the cookie store. This store has the advantage
 that it requires no backend or server side state, which can be useful it some situations
-**BUT** all session data will be sent back to the client in the Cookie, so if you need to store
-private information this should not be used.
+**BUT** all session data will be sent back to the client in the **encrypted** Cookie, so if you need to store private information this should not be used.
 
 This store is appropriate if you're using sticky sessions, i.e. your load balancer is
 distributing different requests from the same browser to different servers.
@@ -1096,9 +1166,38 @@ Also, there is the Infinispan session store (details below).
 These stores are available with the coordinates:
 
 * groupId: `io.vertx`
-* artifactId: `vertx-web-sstore-{cookie|redis|infinispan}`
+* artifactId: `vertx-web-sstore-{cookie|redis|infinispan|caffeine}`
 
 include::web-sstore-infinispan.adoc[leveloffset=+4]
+
+===== Caffeine session store
+
+The Caffeine session store is a local session store that uses the Caffeine caching library to store sessions in memory.
+It is backed by a high-performance, in-memory caching library that provides an efficient way to store, retrieve and manage session data.
+This store is suitable for applications that require fast access to session data and do not need to share session data across multiple Vert.x instances.
+It is also recommended for application that require a high number of sessions to be handled as it has an optimized eviction policy.
+
+To use this module, add the following to the dependencies section of your Maven POM file:
+
+* Maven (in your `pom.xml`):
+
+[source,xml,subs="+attributes"]
+----
+<dependency>
+  <groupId>io.vertx</groupId>
+  <artifactId>vertx-web-sstore-caffeine</artifactId>
+  <version>${maven.version}</version>
+</dependency>
+----
+
+* Gradle (in your `build.gradle` file):
+
+[source,groovy,subs="+attributes"]
+----
+dependencies {
+  compile 'io.vertx:vertx-web-sstore-caffeine:${maven.version}'
+}
+----
 
 === Creating the session handler
 
@@ -1199,16 +1298,16 @@ make sure your authentication handler is before your application handlers on tho
 ----
 
 If the authentication handler has successfully authenticated the user it will inject a {@link io.vertx.ext.auth.User}
-object into the {@link io.vertx.ext.web.RoutingContext} so it's available in your handlers with:
-{@link io.vertx.ext.web.RoutingContext#user()}.
+object into the {@link io.vertx.ext.web.UserContext} so it's available in your handlers from the routing context:
+{@link io.vertx.ext.web.RoutingContext#userContext()}.
 
 If you want your User object to be stored in the session so it's available between requests so you don't have to
 authenticate on each request, then you should make sure you have a session handler before the authentication handler.
 
 Once you have your user object you can also programmatically use the methods on it to authorize the user.
 
-If you want to cause the user to be logged out you can call {@link io.vertx.ext.web.RoutingContext#clearUser()}
-on the routing context.
+If you want to cause the user to be logged out you can call {@link io.vertx.ext.web.UserContext#logout()}
+on the routing context `user` getter. The logout will remove the user from the session if there is one and perform a redirect to an optional uri or `/` by default.
 
 === HTTP Basic Authentication
 
@@ -1243,6 +1342,8 @@ basic authentication handler.
 
 You will also need to setup handlers to serve your actual login page, and a handler to handle the actual login itself.
 To handle the login we provide a prebuilt handler {@link io.vertx.ext.web.handler.FormLoginHandler} for the purpose.
+
+IMPORTANT: The {@link io.vertx.ext.web.handler.FormLoginHandler} requires a {@link io.vertx.ext.web.handler.BodyHandler} to read `POST` requests content.
 
 Here's an example of a simple app, using a redirect auth handler on the default redirect url `/loginpage`.
 
@@ -1332,7 +1433,7 @@ It is important to know that some handlers require specific providers, for examp
 * The {@link io.vertx.ext.web.handler.JWTAuthHandler} requires {@link io.vertx.ext.auth.jwt.JWTAuth}.
 * The {@link io.vertx.ext.web.handler.DigestAuthHandler} requires {@link io.vertx.ext.auth.htdigest.HtdigestAuth}.
 * The {@link io.vertx.ext.web.handler.OAuth2AuthHandler} requires {@link io.vertx.ext.auth.oauth2.OAuth2Auth}.
-* The {@link io.vertx.ext.web.handler.WebAuthnHandler} requires {@link io.vertx.ext.auth.webauthn.WebAuthn}.
+* The {@link io.vertx.ext.web.handler.WebAuthn4JHandler} requires {@link io.vertx.ext.auth.webauthn4j.WebAuthn4J}.
 
 So it is not expected that the providers will be shared across all handlers. There are cases where one can share the
 provider across handlers, for example:
@@ -1365,8 +1466,127 @@ Complex chaining is also possible, for example, building logic sequences such as
 
 [source,$lang]
 ----
-{@link examples.WebExamples#example78}
+{@link examples.WebExamples#exampleChainAuthHandler}
 ----
+
+=== Impersonation
+
+When using authentication handlers, it is possible that the identity of the user changes over time. For
+example, a user may require to become `admin` for a specific period of time. This can be achieved by calling:
+
+[source,$lang]
+----
+{@link examples.WebExamples#example89}
+----
+
+The operation can be reversed by calling:
+
+[source,$lang]
+----
+{@link examples.WebExamples#example90}
+----
+
+The impersonation does not require calling other router endpoints to avoid being exploited from the outside.
+
+=== Refreshing identities
+
+There are times when a critical operation may require attestation of the presence of the user. While this
+attestation is complex, we can achieve this by refreshing the identity of the user. This can be achieved by calling:
+
+[source,$lang]
+----
+{@link examples.WebExamples#example91}
+----
+
+This will require the user to authenticate again to confirm the identity.
+
+
+== Security Auditing
+
+Vert.x-Web comes with an out of the box handler for auditing security events. This handler is useful for logging to an external system like EDR/XDR. EDR stands for Endpoint Detection and Response and XDR stands for Extended Detection and Response. These are security products that are used to detect and respond to threats on endpoints. The handler is called `SecurityAuditLoggerHandler` and it used as a top level handler as:
+
+[source,$lang]
+----
+{@link examples.WebExamples#example88}
+----
+
+=== Event types
+
+The handler will log the following events:
+
+==== REQUEST
+
+When a request is received (either success or fail) you will get a log event with the following information:
+
+----
+[REQUEST epoch="1679389193762" source="127.0.0.1" destination="127.0.0.1" resource="HTTP/1.1 GET /protected/foo" status=200] OK
+----
+
+When a failure occurs you will get a log event with the following information:
+
+----
+[REQUEST epoch="1679389193924" source="127.0.0.1" destination="127.0.0.1" resource="HTTP/1.1 GET /somedir" status=500] FAIL
+----
+
+The information you will get is:
+
+* epoch - the time in milliseconds since the epoch
+* source - the source IP address
+* destination - the destination IP address
+* resource - the HTTP resource
+* status - the HTTP status code
+
+==== AUTHENTICATION
+
+When a request is authenticated you will get a log event with the following information:
+
+----
+[AUTHENTICATION epoch="1679389193762" source="127.0.0.1" destination="127.0.0.1" resource="HTTP/1.1 GET /protected/foo" token="********************************..."] OK
+----
+
+The handler is masking well known PII fields like passwords, tokens, etc. Also for failures there will be an event
+logged:
+
+----
+[AUTHENTICATION epoch="1679389193568" source="127.0.0.1" destination="127.0.0.1" resource="HTTP/1.1 GET /protected/foo" token="********************************..."] FAIL
+----
+
+==== AUTHORIZATION
+
+When a request is authorized you will get a log event with the following information:
+
+----
+[AUTHORIZATION epoch="1679389193678" source="127.0.0.1" destination="127.0.0.1" resource="HTTP/1.1 GET /protected/page1" subject="paulo" authorization="ROLE[role3]"] OK
+----
+
+When a request is not authorized you will get a log event with the following information:
+
+----
+[AUTHORIZATION epoch="1679389193678" source="127.0.0.1" destination="127.0.0.1" resource="HTTP/1.1 GET /protected/page1" subject="paulo" authorization="ROLE[role3]"] OK
+----
+
+The the event will include a couple of extra fields:
+
+* subject - the subject that was authenticated
+* authorization - the authorization that was *required* to authorize the request
+
+The logger will not include user specific authorization information to avoid leaking PII/PHI information.
+
+=== Configuration
+
+The handler will usually log using rfc5424 format (usually known as syslog) but you can configure it to use other
+formats. The configuration is global as it affects the logging format, so to change it you need to do it at a system
+property defined at startup time:
+
+----
+io.vertx.ext.auth.audit.format=rfc5424
+
+// OR
+
+io.vertx.ext.auth.audit.format=json
+----
+
+When using JSON, the same data is logged in a single line json document.
 
 == Serving static resources
 
@@ -1439,7 +1659,7 @@ This can be configured with {@link io.vertx.ext.web.handler.StaticHandler#setInd
 === Changing the web root
 
 By default static resources will be served from the directory `webroot`. To configure this use
-{@link io.vertx.ext.web.handler.StaticHandler#setWebRoot(String)}.
+{@link io.vertx.ext.web.handler.StaticHandler#create(io.vertx.ext.web.handler.FileSystemAccess, String)}.
 
 === Serving hidden files
 
@@ -1544,19 +1764,17 @@ By default the template handler will look for templates in a directory called `t
 The handler will return the results of rendering with a content type of `text/html` by default. This can also be configured.
 
 When you create the template handler you pass in an instance of the template engine you want. Template engines are
-not embedded in vertx-web so, you need to configure your project to access them. Configuration is provided for
+not embedded in vertx-web, so you must configure your project to access them. Configuration is provided for
 each template engine.
 
-Here are some examples:
+Here's an example with the Handlebars template engine:
 
 ////
-These examples are not using the traditional "transcoding" as they use an API providing in another project.
+These examples are not using the traditional "transcoding" as they use an API provided in another project.
 ////
 
-[language, java]
-----
 [source, java]
-\----
+----
 TemplateEngine engine = HandlebarsTemplateEngine.create();
 TemplateHandler handler = TemplateHandler.create(engine);
 
@@ -1566,326 +1784,427 @@ router.get("/dynamic/*").handler(handler);
 
 // Route all GET requests for resource ending in .hbs to the template handler
 router.getWithRegex(".+\\.hbs").handler(handler);
-\----
-----
-
-[language, groovy]
-----
-[source, groovy]
-\----
-import io.vertx.groovy.ext.web.templ.HandlebarsTemplateEngine
-import io.vertx.groovy.ext.web.handler.TemplateHandler
-
-def engine = HandlebarsTemplateEngine.create()
-def handler = TemplateHandler.create(engine)
-
-// This will route all GET requests starting with /dynamic/ to the template handler
-// E.g. /dynamic/graph.hbs will look for a template in /templates/graph.hbs
-router.get("/dynamic/*").handler(handler)
-
-// Route all GET requests for resource ending in .hbs to the template handler
-router.getWithRegex(".+\\.hbs").handler(handler)
-\----
-----
-
-[language, ruby]
-----
-[source, ruby]
-\----
-require 'vertx-web/handlebars_template_engine'
-require 'vertx-web/template_handler'
-
-engine = VertxWeb::HandlebarsTemplateEngine.create()
-handler = VertxWeb::TemplateHandler.create(engine)
-
-# This will route all GET requests starting with /dynamic/ to the template handler
-# E.g. /dynamic/graph.hbs will look for a template in /templates/graph.hbs
-router.get("/dynamic/*").handler(&handler.method(:handle))
-
-# Route all GET requests for resource ending in .hbs to the template handler
-router.get_with_regex(".+\\.hbs").handler(&handler.method(:handle))
-\----
-----
-
-[language, js]
-----
-[source, javascript]
-\----
-var HandlebarsTemplateEngine = require("vertx-web-js/handlebars_template_engine");
-var TemplateHandler = require("vertx-web-js/template_handler");
-
-var engine = HandlebarsTemplateEngine.create();
-var handler = TemplateHandler.create(engine);
-
-// This will route all GET requests starting with /dynamic/ to the template handler
-// E.g. /dynamic/graph.hbs will look for a template in /templates/graph.hbs
-router.get("/dynamic/*").handler(handler.handle);
-
-// Route all GET requests for resource ending in .hbs to the template handler
-router.getWithRegex(".+\\.hbs").handler(handler.handle);
-\----
 ----
 
 === MVEL template engine
 
-To use MVEL, you need to add the following _dependency_ to your project:
-`${maven.groupId}:vertx-web-templ-mvel:${maven.version}`. Create an instance of the MVEL template engine using:
-`io.vertx.ext.web.templ.mvel.MVELTemplateEngine#create(io.vertx.core.Vertx)`
+To use the MVEL template engine, add the following dependency to the _dependencies_ section of your build descriptor:
 
-When using the MVEL template engine, it will by default look for
-templates with the `.templ` extension if no extension is specified in the file name.
+* Maven (in your `pom.xml`):
 
-The routing context {@link io.vertx.ext.web.RoutingContext} is available
-in the MVEL template as the `context` variable, this means you can render the template based on anything in the context
-including the request, response, session or context data.
+[source,xml,subs="+attributes"]
+----
+<dependency>
+  <groupId>io.vertx</groupId>
+  <artifactId>vertx-web-templ-mvel</artifactId>
+  <version>${maven.version}</version>
+</dependency>
+----
 
-Here are some examples:
+* Gradle (in your `build.gradle` file):
+
+[source,groovy,subs="+attributes"]
+----
+dependencies {
+  compile 'io.vertx:vertx-web-templ-mvel:${maven.version}'
+}
+----
+
+Create an instance of the MVEL template engine using: `io.vertx.ext.web.templ.mvel.MVELTemplateEngine#create(io.vertx.core.Vertx)`
+
+When using the MVEL template engine, it will by default look for templates with the `.templ` extension if no extension is specified in the file name.
+
+The routing context {@link io.vertx.ext.web.RoutingContext#data()} is available in the MVEL template as the source of variables, this means you can render the template based on anything in the context data.
+If you need data from the request, response, session then it needs to be added explicitly to the data.
+
+Here is an example:
 
 ----
-The request path is @{context.request().path()}
-
-The variable 'foo' from the session is @{context.session().get('foo')}
-
-The value 'bar' from the context data is @{context.get('bar')}
+The value of 'bar' from routing context data is @{bar}.
 ----
+
+[NOTE]
+====
+You may include a template file into an MVEL template using `@include{}`, as long as the templates reside on the filesystem.
+
+Template inclusion doesn't work if the templates are loaded from the classpath using the Vert.x file resolver.
+
+This is a limitation of the MVEL engine: some other engines let Vert.x plug in a custom template file resolver, MVEL doesn't.
+====
 
 Please consult the http://mvel.documentnode.com/#mvel-2.0-templating-guide[MVEL templates documentation] for how to write
 MVEL templates.
 
-=== Jade template engine
+=== Pug template engine
 
-To use the Jade template engine, you need to add the following _dependency_ to your project:
-`${maven.groupId}:vertx-web-templ-jade:${maven.version}`. Create an instance of the Jade template engine using:
-`io.vertx.ext.web.templ.jade.JadeTemplateEngine#create(io.vertx.core.Vertx)`.
+To use the Pug template engine, add the following dependency to the _dependencies_ section of your build descriptor:
 
-When using the Jade template engine, it will by default look for
-templates with the `.jade` extension if no extension is specified in the file name.
+* Maven (in your `pom.xml`):
 
-The routing context {@link io.vertx.ext.web.RoutingContext} is available
-in the Jade template as the `context` variable, this means you can render the template based on anything in the context
-including the request, response, session or context data.
+[source,xml,subs="+attributes"]
+----
+<dependency>
+  <groupId>io.vertx</groupId>
+  <artifactId>vertx-web-templ-pug</artifactId>
+  <version>${maven.version}</version>
+</dependency>
+----
 
-Here are some examples:
+* Gradle (in your `build.gradle` file):
+
+[source,groovy,subs="+attributes"]
+----
+dependencies {
+  compile 'io.vertx:vertx-web-templ-pug:${maven.version}'
+}
+----
+
+Create an instance of the Pug template engine using: `io.vertx.ext.web.templ.pug.PugTemplateEngine#create(io.vertx.core.Vertx)`.
+
+When using the Pug template engine, it will by default look for templates with the `.pug` extension if no extension is specified in the file name.
+
+The routing context {@link io.vertx.ext.web.RoutingContext#data()} is available in the Pug template as the source of variables, this means you can render the template based on anything in the context data.
+If you need data from the request, response, session then it needs to be added explicitly to the data.
+
+Here is an example:
 
 ----
 !!! 5
 html
   head
-    title= context.get('foo') + context.request().path()
+    title The value of 'bar' from routing context data is #{bar}.
   body
 ----
 
-Please consult the https://github.com/neuland/jade4j[Jade4j documentation] for how to write
-Jade templates.
+Please consult the https://github.com/neuland/pug4j[Pug4j documentation] for how to write Pug templates.
 
 === Handlebars template engine
 
-To use Handlebars, you need to add the following _dependency_ to your project:
-`${maven.groupId}:vertx-web-templ-handlebars:${maven.version}`. Create an instance of the Handlebars template engine
-using: `io.vertx.ext.web.templ.handlebars.HandlebarsTemplateEngine#create(io.vertx.core.Vertx)`.
+To use the Handlebars template engine, add the following dependency to the _dependencies_ section of your build descriptor:
 
-When using the Handlebars template engine, it will by default look for
-templates with the `.hbs` extension if no extension is specified in the file name.
+* Maven (in your `pom.xml`):
 
-Handlebars templates are not able to call arbitrary methods in objects so we can't just pass the routing context
-into the template and let the template introspect it like we can with other template engines.
+[source,xml,subs="+attributes"]
+----
+<dependency>
+  <groupId>io.vertx</groupId>
+  <artifactId>vertx-web-templ-handlebars</artifactId>
+  <version>${maven.version}</version>
+</dependency>
+----
 
-Instead, the context {@link io.vertx.ext.web.RoutingContext#data()} is available in the template.
+* Gradle (in your `build.gradle` file):
 
-If you want to have access to other data like the request path, request params or session data you should
-add it the context data in a handler before the template handler. For example:
+[source,groovy,subs="+attributes"]
+----
+dependencies {
+  compile 'io.vertx:vertx-web-templ-handlebars:${maven.version}'
+}
+----
+
+Create an instance of the Handlebars template engine using: `io.vertx.ext.web.templ.handlebars.HandlebarsTemplateEngine#create(io.vertx.core.Vertx)`.
+
+When using the Handlebars template engine, it will by default look for templates with the `.hbs` extension if no extension is specified in the file name.
+
+The routing context {@link io.vertx.ext.web.RoutingContext#data()} is available in the Handlebars template as the source of variables, this means you can render the template based on anything in the context data.
+
+[IMPORTANT]
+====
+Handlebars templates are not able to call arbitrary methods in objects.
+
+If you want to have access to other data like the request path, request params or session data you should add it the context data in a handler before the template handler.
+For example:
 
 [source,$lang]
 ----
 {@link examples.WebExamples#example41_2}
 ----
+====
 
-Please consult the https://github.com/jknack/handlebars.java[Handlebars Java port documentation] for how to write
-handlebars templates.
+Please consult the https://github.com/jknack/handlebars.java[Handlebars Java port documentation] for how to write handlebars templates.
 
 === Thymeleaf template engine
 
-To use Thymeleaf, you need to add the following _dependency_ to your project:
-`${maven.groupId}:vertx-web-templ-thymeleaf:${maven.version}`. Create an instance of the Thymeleaf template engine
-using: `io.vertx.ext.web.templ.thymeleaf.ThymeleafTemplateEngine#create(io.vertx.core.Vertx)`.
+To use the Thymeleaf template engine, add the following dependency to the _dependencies_ section of your build descriptor:
 
-When using the Thymeleaf template engine, it will by default look for
-templates with the `.html` extension if no extension is specified in the file name.
+* Maven (in your `pom.xml`):
 
-The routing context {@link io.vertx.ext.web.RoutingContext} is available
-in the Thymeleaf template as the `context` variable, this means you can render the template based on anything in the context
-including the request, response, session or context data.
-
-Here are some examples:
-
+[source,xml,subs="+attributes"]
 ----
-[snip]
-<p th:text="${context.get('foo')}"></p>
-<p th:text="${context.get('bar')}"></p>
-<p th:text="${context.normalizedPath()}"></p>
-<p th:text="${context.request().params().get('param1')}"></p>
-<p th:text="${context.request().params().get('param2')}"></p>
-[snip]
+<dependency>
+  <groupId>io.vertx</groupId>
+  <artifactId>vertx-web-templ-thymeleaf</artifactId>
+  <version>${maven.version}</version>
+</dependency>
 ----
 
-Please consult the http://www.thymeleaf.org/[Thymeleaf documentation] for how to write
-Thymeleaf templates.
+* Gradle (in your `build.gradle` file):
+
+[source,groovy,subs="+attributes"]
+----
+dependencies {
+  compile 'io.vertx:vertx-web-templ-thymeleaf:${maven.version}'
+}
+----
+
+Create an instance of the Thymeleaf template engine using: `io.vertx.ext.web.templ.thymeleaf.ThymeleafTemplateEngine#create(io.vertx.core.Vertx)`.
+
+When using the Thymeleaf template engine, it will by default look for templates with the `.html` extension if no extension is specified in the file name.
+
+The routing context {@link io.vertx.ext.web.RoutingContext#data()} is available in the Thymeleaf template as the source of variables, this means you can render the template based on anything in the context data.
+If you need data from the request, response, session then it needs to be added explicitly to the data.
+
+Here is an example:
+
+----
+<div th:fragment="example"><p th:text="${foo}"></p>
+<p th:text="${bar}"></p></div>
+----
+
+Please consult the http://www.thymeleaf.org/[Thymeleaf documentation] for how to write Thymeleaf templates.
 
 === Apache FreeMarker template engine
 
-To use Apache FreeMarker, you need to add the following _dependency_ to your project:
-`${maven.groupId}:vertx-web-templ-freemarker:${maven.version}`. Create an instance of the Apache FreeMarker template engine
-using: `io.vertx.ext.web.templ.Engine#create()`.
+To use the FreeMarker template engine, add the following dependency to the _dependencies_ section of your build descriptor:
 
-When using the Apache FreeMarker template engine, it will by default look for
-templates with the `.ftl` extension if no extension is specified in the file name.
+* Maven (in your `pom.xml`):
 
-The routing context {@link io.vertx.ext.web.RoutingContext} is available
-in the Apache FreeMarker template as the `context` variable, this means you can render the template based on anything in the context
-including the request, response, session or context data.
-
-Here are some examples:
-
+[source,xml,subs="+attributes"]
 ----
-[snip]
-<p th:text="${context.foo}"></p>
-<p th:text="${context.bar}"></p>
-<p th:text="${context.normalizedPath()}"></p>
-<p th:text="${context.request().params().param1}"></p>
-<p th:text="${context.request().params().param2}"></p>
-[snip]
+<dependency>
+  <groupId>io.vertx</groupId>
+  <artifactId>vertx-web-templ-freemarker</artifactId>
+  <version>${maven.version}</version>
+</dependency>
 ----
 
-Please consult the http://www.freemarker.org/[Apache FreeMarker documentation] for how to write
-Apache FreeMarker templates.
+* Gradle (in your `build.gradle` file):
+
+[source,groovy,subs="+attributes"]
+----
+dependencies {
+  compile 'io.vertx:vertx-web-templ-freemarker:${maven.version}'
+}
+----
+
+Create an instance of the Apache FreeMarker template engine using: `io.vertx.ext.web.templ.Engine#create()`.
+
+When using the Apache FreeMarker template engine, it will by default look for templates with the `.ftl` extension if no extension is specified in the file name.
+
+The routing context {@link io.vertx.ext.web.RoutingContext#data()} is available in the FreeMarker template as the source of variables, this means you can render the template based on anything in the context data.
+If you need data from the request, response, session then it needs to be added explicitly to the data.
+
+Here is an example:
+
+----
+Hello ${foo} and ${bar}
+----
+
+Please consult the http://www.freemarker.org/[Apache FreeMarker documentation] for how to write Apache FreeMarker templates.
 
 === Pebble template engine
 
-To use Pebble, you need to add the following _dependency_ to your project:
-`io.vertx:vertx-web-templ-pebble:${maven.version}`. Create an instance of the Pebble template engine
-using: `io.vertx.ext.web.templ.pebble.PebbleTemplateEngine#create(vertx)`.
+To use the Pebble template engine, add the following dependency to the _dependencies_ section of your build descriptor:
 
-When using the Pebble template engine, it will by default look for
-templates with the `.peb` extension if no extension is specified in the file name.
+* Maven (in your `pom.xml`):
 
-The routing context `link:../../apidocs/io/vertx/ext/web/RoutingContext.html[RoutingContext]` is available
-in the Pebble template as the `context` variable, this means you can render the template based on anything in the context
-including the request, response, session or context data.
-
-Here are some examples:
-
+[source,xml,subs="+attributes"]
 ----
-[snip]
-<p th:text="{{context.foo}}"></p>
-<p th:text="{{context.bar}}"></p>
-<p th:text="{{context.normalizedPath()}}"></p>
-<p th:text="{{context.request().params().param1}}"></p>
-<p th:text="{{context.request().params().param2}}"></p>
-[snip]
+<dependency>
+  <groupId>io.vertx</groupId>
+  <artifactId>vertx-web-templ-pebble</artifactId>
+  <version>${maven.version}</version>
+</dependency>
 ----
 
-Please consult the http://www.mitchellbosecke.com/pebble/home/[Pebble documentation] for how to write
-Pebble templates.
+* Gradle (in your `build.gradle` file):
+
+[source,groovy,subs="+attributes"]
+----
+dependencies {
+  compile 'io.vertx:vertx-web-templ-pebble:${maven.version}'
+}
+----
+
+Create an instance of the Pebble template engine using: `io.vertx.ext.web.templ.pebble.PebbleTemplateEngine#create(vertx)`.
+
+When using the Pebble template engine, it will by default look for templates with the `.peb` extension if no extension is specified in the file name.
+
+The routing context {@link io.vertx.ext.web.RoutingContext#data()} is available in the Pebble template as the source of variables, this means you can render the template based on anything in the context data.
+If you need data from the request, response, session then it needs to be added explicitly to the data.
+
+Here is an example:
+
+----
+Hello {{foo}} and {{bar}}
+----
+
+Please consult the http://www.mitchellbosecke.com/pebble/home/[Pebble documentation] for how to write Pebble templates.
 
 === Rocker template engine
 
-To use Rocker, then add `io.vertx:vertx-web-templ-rocker:${maven.version}` as a dependency to your project.
-You can then create a Rocker template engine instance with `io.vertx.ext.web.templ.rocker#create()`.
+To use the Rocker template engine, add the following dependency to the _dependencies_ section of your build descriptor:
 
-The values of the JSON context object passed to the `render` method are then exposed as template parameters.
-Given:
+* Maven (in your `pom.xml`):
 
+[source,xml,subs="+attributes"]
 ----
-[snip]
-final JsonObject context = new JsonObject()
-  .put("foo", "badger")
-  .put("bar", "fox")
-  .put("context", new JsonObject().put("path", "/foo/bar"));
-
-engine.render(context, "somedir/TestRockerTemplate2", render -> {
-  // (...)
-});
-[snip]
+<dependency>
+  <groupId>io.vertx</groupId>
+  <artifactId>vertx-web-templ-rocker</artifactId>
+  <version>${maven.version}</version>
+</dependency>
 ----
 
-then the template can be as the following `somedir/TestRockerTemplate2.rocker.html` resource file:
+* Gradle (in your `build.gradle` file):
+
+[source,groovy,subs="+attributes"]
+----
+dependencies {
+  compile 'io.vertx:vertx-web-templ-rocker:${maven.version}'
+}
+----
+
+Create an instance of the Rocker template engine using: `io.vertx.ext.web.templ.rocker.RockerTemplateEngine#create()`.
+
+The routing context {@link io.vertx.ext.web.RoutingContext#data()} is available in the Rocker template as the source of variables, this means you can render the template based on anything in the context data.
+If you need data from the request, response, session then it needs to be added explicitly to the data.
+
+Here is an example:
 
 ----
 @import io.vertx.core.json.JsonObject
-@args (JsonObject context, String foo, String bar)
+@args (String foo, String bar)
 Hello @foo and @bar
-Request path is @context.getString("path")
 ----
 
 === HTTL template engine
 
-To use HTTL, you need to add the following _dependency_ to your project:
-`${maven.groupId}:vertx-web-templ-httl:${maven.version}`. Create an instance of the HTTL template engine
-using: `io.vertx.ext.web.templ.httl.HTTLTemplateEngine#create(io.vertx.core.Vertx)`.
+To use the HTTL template engine, add the following dependency to the _dependencies_ section of your build descriptor:
 
-When using the HTTL template engine, it will by default look for
-templates with the `.httl` extension if no extension is specified in the file name.
+* Maven (in your `pom.xml`):
 
-The values of the JSON context object passed to the `render` method are then exposed as template parameters.
-Given:
-
+[source,xml,subs="+attributes"]
 ----
-[snip]
-TemplateEngine engine = HTTLTemplateEngine.create(vertx);
-final JsonObject context = new JsonObject()
-  .put("foo", "badger")
-  .put("bar", "fox");
-
-engine.render(context, "somedir/test-httl-template1.httl", render -> {
-  // (...)
-});
-[snip]
+<dependency>
+  <groupId>io.vertx</groupId>
+  <artifactId>vertx-web-templ-httl</artifactId>
+  <version>${maven.version}</version>
+</dependency>
 ----
 
-then the template can be as the following `somedir/test-httl-template1.httl` resource file:
+* Gradle (in your `build.gradle` file):
+
+[source,groovy,subs="+attributes"]
+----
+dependencies {
+  compile 'io.vertx:vertx-web-templ-httl:${maven.version}'
+}
+----
+
+Create an instance of the HTTL template engine using: `io.vertx.ext.web.templ.httl.HTTLTemplateEngine#create(io.vertx.core.Vertx)`.
+
+When using the HTTL template engine, it will by default look for templates with the `.httl` extension if no extension is specified in the file name.
+
+The routing context {@link io.vertx.ext.web.RoutingContext#data()} is available in the HTTL template as the source of variables, this means you can render the template based on anything in the context data.
+If you need data from the request, response, session then it needs to be added explicitly to the data.
+
+Here is an example:
 
 ----
 <!-- #set(String foo, String bar) -->
 Hello ${foo} and ${bar}
-
 ----
 
-Please consult the https://httl.github.io/en/[HTTL documentation] for how to write
-HTTL templates.
+Please consult the https://httl.github.io/en/[HTTL documentation] for how to write HTTL templates.
 
 === Rythm template engine
 
-To use Rythm, you need to add the following _dependency_ to your project:
-`${maven.groupId}:vertx-web-templ-rythm:${maven.version}`. Create an instance of the Rythm template engine
-using: `io.vertx.ext.web.templ.rythm.RythmTemplateEngine#create(io.vertx.core.Vertx)`.
+To use the Rythm template engine, add the following dependency to the _dependencies_ section of your build descriptor:
 
-When using the Rythm template engine, it will by default look for
-templates with the `.html` extension if no extension is specified in the file name.
+* Maven (in your `pom.xml`):
 
-The values of the JSON context object passed to the `render` method are then exposed as template parameters.
-Given:
-
+[source,xml,subs="+attributes"]
 ----
-[snip]
-TemplateEngine engine = RythmTemplateEngine.create(vertx);
-final JsonObject context = new JsonObject()
-  .put("foo", "badger")
-  .put("bar", "fox");
-
-engine.render(context, "somedir/test-rythm-template1.html", render -> {
-  // (...)
-});
-[snip]
+<dependency>
+  <groupId>io.vertx</groupId>
+  <artifactId>vertx-web-templ-rythm</artifactId>
+  <version>${maven.version}</version>
+</dependency>
 ----
 
-then the template can be as the following `somedir/test-rythm-template1.httl` resource file:
+* Gradle (in your `build.gradle` file):
+
+[source,groovy,subs="+attributes"]
+----
+dependencies {
+  compile 'io.vertx:vertx-web-templ-rythm:${maven.version}'
+}
+----
+
+Create an instance of the Rythm template engine using: `io.vertx.ext.web.templ.rythm.RythmTemplateEngine#create(io.vertx.core.Vertx)`.
+
+When using the Rythm template engine, it will by default look for templates with the `.html` extension if no extension is specified in the file name.
+
+The routing context {@link io.vertx.ext.web.RoutingContext#data()} is available in the Rythm template as the source of variables, this means you can render the template based on anything in the context data.
+If you need data from the request, response, session then it needs to be added explicitly to the data.
+
+Here is an example:
 
 ----
-<!-- #set(String foo, String bar) -->
-Hello @foo and @bar
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Title</title>
+</head>
+<body>
+  <p>@foo</p>
+  <p>@bar</p>
+</body>
+</html>
 ----
 
 Please consult the http://www.rythmengine.org/[RythmEngine documentation] for how to write templates.
+
+=== JTE template engine
+
+To use the JTE template engine, add the following dependency to the _dependencies_ section of your build descriptor:
+
+* Maven (in your `pom.xml`):
+
+[source,xml,subs="+attributes"]
+----
+<dependency>
+  <groupId>io.vertx</groupId>
+  <artifactId>vertx-web-templ-jte</artifactId>
+  <version>${maven.version}</version>
+</dependency>
+----
+
+* Gradle (in your `build.gradle` file):
+
+[source,groovy,subs="+attributes"]
+----
+dependencies {
+  compile 'io.vertx:vertx-web-templ-jte:${maven.version}'
+}
+----
+
+Create an instance of the JTE template engine using: `io.vertx.ext.web.templ.jte.JteTemplateEngine#create(io.vertx.core.Vertx, java.lang.String)`.
+
+The routing context {@link io.vertx.ext.web.RoutingContext#data()} is available in the JTE template as the source of variables, this means you can render the template based on anything in the context data.
+If you need data from the request, response, session then it needs to be added explicitly to the data.
+
+Here is an example:
+
+----
+@import io.vertx.core.json.JsonObject
+@param String foo
+@param String bar
+
+Hello ${foo} and ${bar}
+----
 
 === Caching
 
@@ -1985,12 +2304,11 @@ Please see the https://github.com/sockjs/sockjs-client[SockJS website] for more 
 
 === SockJS handler
 
-Vert.x provides an out of the box handler called {@link io.vertx.ext.web.handler.sockjs.SockJSHandler} for
-using SockJS in your Vert.x-Web applications.
+Vert.x provides an out-of-the-box handler called {@link io.vertx.ext.web.handler.sockjs.SockJSHandler} for using SockJS in your Vert.x-Web applications.
 
 You should create one handler per SockJS application using {@link io.vertx.ext.web.handler.sockjs.SockJSHandler#create}.
-You can also specify configuration options when creating the instance. The configuration options are described with
-an instance of {@link io.vertx.ext.web.handler.sockjs.SockJSHandlerOptions}.
+You can also specify configuration options when creating the instance.
+The configuration options are described with an instance of {@link io.vertx.ext.web.handler.sockjs.SockJSHandlerOptions}.
 
 [source,$lang]
 ----
@@ -2011,12 +2329,15 @@ is loaded using {@link io.vertx.ext.web.handler.sockjs.SockJSSocket#routingConte
 the users and sessions accessible through {@link io.vertx.ext.web.handler.sockjs.SockJSSocket#webSession()}
 and {@link io.vertx.ext.web.handler.sockjs.SockJSSocket#webUser()}.
 
-Here's an example of a simple SockJS handler that simply echoes back any back any data that it reads:
+Here's an example of a simple SockJS handler that simply echoes back any data that it reads:
 
 [source,$lang]
 ----
 {@link examples.WebExamples#example44}
 ----
+
+IMPORTANT: The {@link io.vertx.ext.web.handler.sockjs.SockJSHandler} requires a {@link io.vertx.ext.web.handler.BodyHandler} to read `POST` requests content.
+This is useful when WebSockets are not available (disabled by intermediate proxies or by configuration).
 
 === The client side
 
@@ -2400,6 +2721,8 @@ CSRF or sometimes also known as XSRF is a technique by which an unauthorized sit
 Vert.x-Web includes a handler {@link io.vertx.ext.web.handler.CSRFHandler} that you can use to prevent cross site
 request forgery requests.
 
+IMPORTANT: The {@link io.vertx.ext.web.handler.CSRFHandler} requires a {@link io.vertx.ext.web.handler.BodyHandler} to read the content of requests having an unsafe method (`POST`, `PUT`, ...etc.)
+
 On each get request under this handler a cookie is added to the response with a unique token. Clients are then
 expected to return this token back in a header. Since cookies are sent it is required that the cookie handler is also
 present on the router.
@@ -2415,8 +2738,7 @@ header was present in the Form attributes under the same name as the header, e.g
 </form>
 ----
 
-It is the responsibility of the user to fill in the right value for the form field. Users who prefer to use an HTML
-only solution can fill this value by fetching the the token value from the routing context under the key `X-XSRF-TOKEN`
+It is the responsibility of the user to fill in the right value for the form field. Users who prefer to use an HTML only solution can fill this value by fetching the token value from the routing context under the key `X-XSRF-TOKEN`
 or the header name they have chosen during the instantiation of the `CSRFHandler` object.
 
 [source,$lang]
@@ -2424,7 +2746,8 @@ or the header name they have chosen during the instantiation of the `CSRFHandler
 {@link examples.WebExamples#example54}
 ----
 
-Note that this handler is session aware. If there is a session available the form parameter or header might be omited
+Note that this handler is session aware.
+If there is a session available the form parameter or header might be omitted
 during the `POST` action as it will be read from the session. This also implies that tokens will only be regenerated
 on session upgrades.
 
@@ -2617,7 +2940,9 @@ This is handled automatically by the handler as long as the provider is configur
 In real life this means that your API's can access your protected resources using the header `Authorization` with the
 value `Bearer BASE64_ACCESS_TOKEN`.
 
-=== WebAuthn
+=== WebAuthn4J
+
+NOTE: this is an alternate implementation of WebAuthn using WebAuthn4J and a very slightly different API
 
 Our online existence relies on an outdated and fragile idea of passwords. The password is what lies between a malicious
 user and your bank account or social media accounts. Passwords are hard to maintain; it's hard to store them on the
@@ -2631,15 +2956,15 @@ a yubikey token, or your mobile phone.
 
 The protocol requires at least the first callback to be mounted on the router:
 
-1. `/webauthn/response` the callback used to perform all the validations
-2. `/webauthn/login` the endpoint to allow users to start the login flow (optional, but without it it won't be able to login)
-3. `/webauthn/register` the endpoint to allow users to register a new identificator (optional, if the data is already stored this endpoint is not needed)
+1. `/webauthn4j/response` the callback used to perform all the validations
+2. `/webauthn4j/login` the endpoint to allow users to start the login flow (optional, but without it it won't be able to login)
+3. `/webauthn4j/register` the endpoint to allow users to register a new identificator (optional, if the data is already stored this endpoint is not needed)
 
 An example of a protected application is:
 
 [source,$lang]
 ----
-{@link examples.WebExamples#example75}
+{@link examples.WebExamples#example89}
 ----
 
 The application is not secure on the backend side but there is some code needed to be performed on the client side. A bit
@@ -2743,7 +3068,7 @@ getGetAssertionChallenge({name: 'your-user-name'})
 // utility functions
 
 let sendWebAuthnResponse = (body) => {
-  return fetch('/webauthn/response', {
+  return fetch('/webauthn4j/response', {
     method: 'POST',
     credentials: 'include',
     headers: {
@@ -2760,7 +3085,7 @@ let sendWebAuthnResponse = (body) => {
 };
 
 let getGetAssertionChallenge = (formBody) => {
-  return fetch('/webauthn/login', {
+  return fetch('/webauthn4j/login', {
     method: 'POST',
     credentials: 'include',
     headers: {
@@ -2809,7 +3134,7 @@ getMakeCredentialsChallenge({name: 'myalias', displayName: 'Paulo Lopes'})
 // utility functions
 
 let getMakeCredentialsChallenge = (formBody) => {
-  return fetch('/webauthn/register', {
+  return fetch('/webauthn4j/register', {
     method: 'POST',
     credentials: 'include',
     headers: {
@@ -2965,3 +3290,131 @@ Although we do NOT recommend, Vert.x will not force you to anything. If it is yo
 ----
 {@link examples.WebExamples#example65}
 ----
+
+== Health Check Handler
+
+The link:/docs/vertx-health-check/java/[Vert.x Health Checks] module provides a way to determine the current state of an application.
+
+Include it to your project's dependencies:
+
+* Maven (in your `pom.xml`):
+
+[source,xml,subs="+attributes"]
+----
+<dependency>
+  <groupId>io.vertx</groupId>
+  <artifactId>vertx-health-check</artifactId>
+  <version>${maven.version}</version>
+</dependency>
+----
+
+* Gradle (in your `build.gradle` file):
+
+[source,groovy,subs="+attributes"]
+----
+compile 'io.vertx:vertx-health-check:${maven.version}'
+----
+
+Then declare the {@link io.vertx.ext.web.healthchecks.HealthCheckHandler} to expose the computed application state over HTTP.
+
+[source,$lang]
+----
+{@link examples.WebExamples#exposeHealthChecks}
+----
+
+NOTE: Using an asterisk is not strictly required.
+It is only useful if you need to be able to query the state of single procedure, or of a single group.
+
+It is not required to create a {@link io.vertx.ext.healthchecks.HealthChecks} instance beforehand.
+Health check link:/docs/vertx-health-check/java/#_procedures[procedures] can be registered directly on the handler.
+
+[source,$lang]
+----
+{@link examples.WebExamples#registerHealthCheckProcedureDirectly}
+----
+
+=== HTTP responses and JSON Output
+
+When using the {@link io.vertx.ext.web.healthchecks.HealthCheckHandler}, the overall health check is retrieved using an HTTP request.
+
+If no procedure is registered, the response is `204 - NO CONTENT`, indicating that the system is _UP_ but no procedure has been executed.
+The response does not contain a payload.
+
+If there is at least one procedure registered, this procedure is executed and the outcome status is computed.
+The response would use the following status code:
+
+* `200`: Everything is fine
+* `503`: At least one procedure has reported a non-healthy state
+* `500`: One procedure has thrown an error or has not reported a status in time
+
+The content is a JSON document indicating the overall result (`outcome`).
+It's either `UP` or `DOWN`.
+A `checks` array is also given indicating the result of the different executed procedures.
+If the procedure has reported additional data, the data is also given:
+
+[source,json]
+----
+{
+ "checks" : [
+ {
+   "id" : "A",
+   "status" : "UP"
+ },
+ {
+   "id" : "B",
+   "status" : "DOWN",
+   "data" : {
+     "some-data" : "some-value"
+   }
+ }
+ ],
+ "outcome" : "DOWN"
+}
+----
+
+In case of groups/hierarchy, the `checks` array depicts this structure:
+
+[source,json]
+----
+{
+ "checks" : [
+ {
+   "id" : "my-group",
+   "status" : "UP",
+   "checks" : [
+   {
+     "id" : "check-2",
+     "status" : "UP"
+   },
+   {
+     "id" : "check-1",
+     "status" : "UP"
+   }]
+ }],
+ "outcome" : "UP"
+}
+----
+
+If a procedure throws an error or reports a failure (exception), the JSON document provides the `cause` in the `data` section.
+If a procedure does not report back before a timeout, the indicated cause is `Timeout`.
+
+=== Authentication
+
+When using the {@link io.vertx.ext.web.healthchecks.HealthCheckHandler}, you can provide a {@link io.vertx.ext.auth.authentication.AuthenticationProvider} to authenticate the request.
+
+[source,$lang]
+----
+{@link examples.WebExamples#exposeHealthChecksWithAuth}
+----
+
+Check out link:/docs/#authentication_and_authorisation[Vert.x Auth docs] for more details about available authentication providers.
+
+The handler creates a JSON object containing:
+
+* the request headers
+* the request params
+* the form params, if any
+* the content as JSON, if any, and if the request set the content type to `application/json`.
+
+The resulting object is passed to the auth provider to authenticate the request.
+If the authentication failed, it returns a `403 - FORBIDDEN` response.

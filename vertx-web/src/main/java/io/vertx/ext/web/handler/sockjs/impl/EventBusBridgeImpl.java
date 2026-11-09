@@ -1,33 +1,12 @@
 /*
- * Copyright 2014 Red Hat, Inc.
+ * Copyright (c) 2011-2023 Contributors to the Eclipse Foundation
  *
- *  All rights reserved. This program and the accompanying materials
- *  are made available under the terms of the Eclipse Public License v1.0
- *  and Apache License v2.0 which accompanies this distribution.
+ * This program and the accompanying materials are made available under the
+ * terms of the Eclipse Public License 2.0 which is available at
+ * http://www.eclipse.org/legal/epl-2.0, or the Apache License, Version 2.0
+ * which is available at https://www.apache.org/licenses/LICENSE-2.0.
  *
- *  The Eclipse Public License is available at
- *  http://www.eclipse.org/legal/epl-v10.html
- *
- *  The Apache License v2.0 is available at
- *  http://www.opensource.org/licenses/apache2.0.php
- *
- *  You may elect to redistribute this code under either of these licenses.
- */
-
-/*
- * Copyright (c) 2011-2013 The original author or authors
- * ------------------------------------------------------
- * All rights reserved. This program and the accompanying materials
- * are made available under the terms of the Eclipse Public License v1.0
- * and Apache License v2.0 which accompanies this distribution.
- *
- *     The Eclipse Public License is available at
- *     http://www.eclipse.org/legal/epl-v10.html
- *
- *     The Apache License v2.0 is available at
- *     http://www.opensource.org/licenses/apache2.0.php
- *
- * You may elect to redistribute this code under either of these licenses.
+ * SPDX-License-Identifier: EPL-2.0 OR Apache-2.0
  */
 
 package io.vertx.ext.web.handler.sockjs.impl;
@@ -36,10 +15,10 @@ import io.vertx.core.*;
 import io.vertx.core.buffer.Buffer;
 import io.vertx.core.eventbus.*;
 import io.vertx.core.http.HttpHeaders;
+import io.vertx.core.internal.logging.Logger;
+import io.vertx.core.internal.logging.LoggerFactory;
 import io.vertx.core.json.DecodeException;
 import io.vertx.core.json.JsonObject;
-import io.vertx.core.impl.logging.Logger;
-import io.vertx.core.impl.logging.LoggerFactory;
 import io.vertx.ext.auth.User;
 import io.vertx.ext.auth.authorization.Authorization;
 import io.vertx.ext.auth.authorization.AuthorizationProvider;
@@ -47,7 +26,9 @@ import io.vertx.ext.auth.authorization.PermissionBasedAuthorization;
 import io.vertx.ext.bridge.BridgeEventType;
 import io.vertx.ext.bridge.PermittedOptions;
 import io.vertx.ext.web.Session;
-import io.vertx.ext.web.handler.sockjs.*;
+import io.vertx.ext.web.handler.sockjs.BridgeEvent;
+import io.vertx.ext.web.handler.sockjs.SockJSBridgeOptions;
+import io.vertx.ext.web.handler.sockjs.SockJSSocket;
 
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -233,9 +214,9 @@ public class EventBusBridgeImpl implements Handler<SockJSSocket> {
             Match curMatch = checkMatches(false, address, msg.body());
             if (curMatch.doesMatch) {
               if (curMatch.requiredAuthority != null) {
-                authorise(curMatch, sock.webUser(), res -> {
-                  if (res.succeeded()) {
-                    if (res.result()) {
+                authorise(curMatch, sock.webUser())
+                  .onSuccess(ok -> {
+                    if (ok) {
                       checkAddAccceptedReplyAddress(msg);
                       deliverMessage(sock, address, msg);
                     } else {
@@ -243,10 +224,8 @@ public class EventBusBridgeImpl implements Handler<SockJSSocket> {
                         LOG.debug("Outbound message for address " + address + " rejected because auth is required and socket is not authed");
                       }
                     }
-                  } else {
-                    LOG.error(res.cause());
-                  }
-                });
+                  })
+                  .onFailure(LOG::error);
 
               } else {
                 checkAddAccceptedReplyAddress(msg);
@@ -262,8 +241,15 @@ public class EventBusBridgeImpl implements Handler<SockJSSocket> {
           MessageConsumer<?> reg = eb.consumer(address).handler(handler);
           registrations.put(address, reg);
           info.handlerCount++;
-          // Notify registration completed
-          checkCallHook(() -> new BridgeEventImpl(BridgeEventType.REGISTERED, rawMsg, sock));
+          reg.completion().onComplete(ar -> {
+            if (ar.succeeded()) {
+              // Notify registration completed
+              checkCallHook(() -> new BridgeEventImpl(BridgeEventType.REGISTERED, rawMsg, sock));
+            } else {
+              LOG.warn("Cannot register handler for address " + address, ar.cause());
+              replyError(sock, "registration_failure");
+            }
+          });
         } else {
           // inbound match failed
           if (debug) {
@@ -287,7 +273,7 @@ public class EventBusBridgeImpl implements Handler<SockJSSocket> {
           MessageConsumer<?> registration = registrations.remove(address);
           if (registration != null) {
             SockInfo info = sockInfos.get(sock);
-            registration.unregister();
+            registration.completion().onSuccess(v -> registration.unregister());
             info.handlerCount--;
           }
         } else {
@@ -440,9 +426,9 @@ public class EventBusBridgeImpl implements Handler<SockJSSocket> {
       if (curMatch.requiredAuthority != null) {
         User webUser = sock.webUser();
         if (webUser != null) {
-          authorise(curMatch, webUser, res -> {
-            if (res.succeeded()) {
-              if (res.result()) {
+          authorise(curMatch, webUser)
+            .onSuccess(ok -> {
+              if (ok) {
                 checkAndSend(send, address, body, headers, sock, replyAddress, awaitingReply);
               } else {
                 replyError(sock, "access_denied");
@@ -450,11 +436,11 @@ public class EventBusBridgeImpl implements Handler<SockJSSocket> {
                   LOG.debug("Inbound message for address " + address + " rejected because is not authorised");
                 }
               }
-            } else {
+            })
+            .onFailure(err -> {
               replyError(sock, "auth_error");
-              LOG.error("Error in performing authorization", res.cause());
-            }
-          });
+              LOG.error("Error in performing authorization", err);
+            });
         } else {
           // no web session
           replyError(sock, "not_logged_in");
@@ -526,13 +512,13 @@ public class EventBusBridgeImpl implements Handler<SockJSSocket> {
     if (send) {
       if (awaitingReply != null) {
         if (replyAddress != null) {
-          awaitingReply.replyAndRequest(body, new DeliveryOptions().setSendTimeout(replyTimeout).setHeaders(mHeaders), replyHandler);
+          awaitingReply.replyAndRequest(body, new DeliveryOptions().setSendTimeout(replyTimeout).setHeaders(mHeaders)).onComplete(replyHandler);
         } else {
           awaitingReply.reply(body, new DeliveryOptions().setSendTimeout(replyTimeout).setHeaders(mHeaders));
         }
       } else {
         if (replyAddress != null) {
-          eb.request(address, body, new DeliveryOptions().setSendTimeout(replyTimeout).setHeaders(mHeaders), replyHandler);
+          eb.request(address, body, new DeliveryOptions().setSendTimeout(replyTimeout).setHeaders(mHeaders)).onComplete(replyHandler);
         } else {
           eb.send(address, body, new DeliveryOptions().setSendTimeout(replyTimeout).setHeaders(mHeaders));
         }
@@ -545,31 +531,21 @@ public class EventBusBridgeImpl implements Handler<SockJSSocket> {
     }
   }
 
-  private void authorise(Match curMatch, User webUser, Handler<AsyncResult<Boolean>> handler) {
+  private Future<Boolean> authorise(Match curMatch, User webUser) {
     // step 1: match against the raw user, if a AuthZ handler is in the path it could have already
     //         loaded the authorizations
     if (curMatch.requiredAuthority.match(webUser)) {
-      handler.handle(Future.succeededFuture(true));
-      return;
+      return Future.succeededFuture(true);
     }
 
     if (authzProvider == null) {
       // can't load, there's no provider
-      handler.handle(Future.succeededFuture(false));
-      return;
+      return Future.succeededFuture(false);
     }
     // step 2: load authorizations
-    authzProvider.getAuthorizations(webUser, res -> {
-      if (res.succeeded()) {
-        if (curMatch.requiredAuthority.match(webUser)) {
-          handler.handle(Future.succeededFuture(true));
-        } else {
-          handler.handle(Future.succeededFuture(false));
-        }
-      } else {
-        handler.handle(Future.failedFuture(res.cause()));
-      }
-    });
+    return authzProvider
+      .getAuthorizations(webUser)
+      .map(res -> curMatch.requiredAuthority.match(webUser));
   }
 
   /*

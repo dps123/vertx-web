@@ -16,20 +16,21 @@
 
 package io.vertx.ext.web.handler.impl;
 
-import io.vertx.core.AsyncResult;
 import io.vertx.core.Future;
-import io.vertx.core.Handler;
 import io.vertx.core.MultiMap;
 import io.vertx.core.http.HttpHeaders;
 import io.vertx.core.http.HttpMethod;
 import io.vertx.core.http.HttpServerRequest;
 import io.vertx.ext.auth.User;
+import io.vertx.ext.auth.audit.Marker;
+import io.vertx.ext.auth.audit.SecurityAudit;
 import io.vertx.ext.auth.authentication.AuthenticationProvider;
 import io.vertx.ext.auth.authentication.UsernamePasswordCredentials;
 import io.vertx.ext.web.RoutingContext;
 import io.vertx.ext.web.Session;
 import io.vertx.ext.web.handler.FormLoginHandler;
 import io.vertx.ext.web.handler.HttpException;
+import io.vertx.ext.web.impl.RoutingContextInternal;
 
 /**
  * @author <a href="http://tfox.org">Tim Fox</a>
@@ -75,27 +76,28 @@ public class FormLoginHandlerImpl extends AuthenticationHandlerImpl<Authenticati
   }
 
   @Override
-  public void authenticate(RoutingContext context, Handler<AsyncResult<User>> handler) {
+  public Future<User> authenticate(RoutingContext context) {
     HttpServerRequest req = context.request();
     if (req.method() != HttpMethod.POST) {
-      handler.handle(Future.failedFuture(BAD_METHOD)); // Must be a POST
+      return Future.failedFuture(BAD_METHOD); // Must be a POST
     } else {
       if (!context.body().available()) {
-        handler.handle(Future.failedFuture("BodyHandler is required to process POST requests"));
+        return Future.failedFuture("BodyHandler is required to process POST requests");
       } else {
         MultiMap params = req.formAttributes();
         String username = params.get(usernameParam);
         String password = params.get(passwordParam);
         if (username == null || password == null) {
-          handler.handle(Future.failedFuture(BAD_REQUEST));
+          return Future.failedFuture(BAD_REQUEST);
         } else {
-          authProvider.authenticate(new UsernamePasswordCredentials(username, password), authn -> {
-            if (authn.failed()) {
-              handler.handle(Future.failedFuture(new HttpException(401, authn.cause())));
-            } else {
-              handler.handle(authn);
-            }
-          });
+          final SecurityAudit audit = ((RoutingContextInternal) context).securityAudit();
+          final UsernamePasswordCredentials credentials = new UsernamePasswordCredentials(username, password);
+          audit.credentials(credentials);
+
+          return authProvider
+            .authenticate(new UsernamePasswordCredentials(username, password))
+            .andThen(op -> audit.audit(Marker.AUTHENTICATION, op.succeeded()))
+            .recover(err -> Future.failedFuture(new HttpException(401, err)));
         }
       }
     }

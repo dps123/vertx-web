@@ -16,20 +16,27 @@
 
 package io.vertx.ext.web.handler.impl;
 
-import io.vertx.core.*;
+import io.vertx.core.Completable;
+import io.vertx.core.Future;
+import io.vertx.core.Promise;
+import io.vertx.core.Vertx;
 import io.vertx.core.http.Cookie;
 import io.vertx.core.http.CookieSameSite;
 import io.vertx.core.http.HttpServerRequest;
-import io.vertx.core.impl.ContextInternal;
-import io.vertx.core.impl.logging.Logger;
-import io.vertx.core.impl.logging.LoggerFactory;
+import io.vertx.core.internal.ContextInternal;
+import io.vertx.core.internal.logging.Logger;
+import io.vertx.core.internal.logging.LoggerFactory;
 import io.vertx.ext.auth.User;
 import io.vertx.ext.web.RoutingContext;
 import io.vertx.ext.web.Session;
 import io.vertx.ext.web.handler.SessionHandler;
 import io.vertx.ext.web.impl.RoutingContextInternal;
+import io.vertx.ext.web.impl.Signature;
+import io.vertx.ext.web.impl.UserContextInternal;
 import io.vertx.ext.web.sstore.SessionStore;
 import io.vertx.ext.web.sstore.impl.SessionInternal;
+
+import java.util.Objects;
 
 /**
  * @author <a href="http://tfox.org">Tim Fox</a>
@@ -56,6 +63,7 @@ public class SessionHandlerImpl implements SessionHandler {
 
   private boolean cookieless;
   private CookieSameSite cookieSameSite;
+  private Signature signature;
 
   public SessionHandlerImpl(SessionStore sessionStore) {
     this.sessionStore = sessionStore;
@@ -128,6 +136,12 @@ public class SessionHandlerImpl implements SessionHandler {
   }
 
   @Override
+  public SessionHandler setSigningSecret(String secret) {
+    this.signature = new Signature(secret);
+    return this;
+  }
+
+  @Override
   public Future<Void> flush(RoutingContext context, boolean ignoreStatus) {
     return flush(context, false, ignoreStatus);
   }
@@ -188,11 +202,19 @@ public class SessionHandlerImpl implements SessionHandler {
             session.setAccessed();
           } else {
             // the session cookie needs to be updated to the new id
-            final Cookie cookie = sessionCookie(context, session);
+            final Cookie cookie = requestSessionCookie(context);
             // restore defaults
             session.setAccessed();
-            cookie.setValue(session.value());
-            setCookieProperties(cookie, false);
+            if (cookie != null) {
+              String cookieValue = session.value();
+              if (Objects.nonNull(signature)) {
+                cookieValue = signature.sign(cookieValue);
+              }
+              cookie.setValue(cookieValue);
+              setCookieProperties(cookie, false);
+            } else {
+              sessionCookie(context, session.value());
+            }
           }
 
           // we must invalidate the old id
@@ -210,7 +232,9 @@ public class SessionHandlerImpl implements SessionHandler {
         } else if (!lazySession || sessionUsed) {
           if (!cookieless) {
             // if lazy mode activated, no need to store the session nor to create the session cookie if not used.
-            sessionCookie(context, session);
+            if (requestSessionCookie(context) == null) {
+              sessionCookie(context, session.value());
+            }
           }
           session.setAccessed();
           return sessionStore.put(session)
@@ -222,10 +246,12 @@ public class SessionHandlerImpl implements SessionHandler {
             });
         } else {
           // No-Op, just accept that the store skipped
+          context.put(SESSION_FLUSHED_KEY, true);
           return ctx.succeededFuture();
         }
       } else {
         // No-Op, just accept that the store skipped
+        context.put(SESSION_FLUSHED_KEY, true);
         return ctx.succeededFuture();
       }
     } else {
@@ -259,6 +285,15 @@ public class SessionHandlerImpl implements SessionHandler {
 
   @Override
   public void handle(RoutingContext context) {
+
+    // we need to keep state since we can be called again on reroute
+    if (!((RoutingContextInternal) context).seenHandler(RoutingContextInternal.SESSION_HANDLER)) {
+      ((RoutingContextInternal) context).visitHandler(RoutingContextInternal.SESSION_HANDLER);
+    } else {
+      context.next();
+      return;
+    }
+
     HttpServerRequest request = context.request();
     if (nagHttps && LOG.isDebugEnabled()) {
       String uri = request.absoluteURI();
@@ -337,11 +372,13 @@ public class SessionHandlerImpl implements SessionHandler {
     return session;
   }
 
+  @Override
   public Future<Void> setUser(RoutingContext context, User user) {
     if (!cookieless) {
       context.response().removeCookie(sessionCookieName, false);
     }
-    context.setUser(user);
+    ((UserContextInternal) context.userContext())
+      .setUser(user);
     // signal we must store the user to link it to the session
     context.put(SESSION_STOREUSER_KEY, true);
     return flush(context, true, true);
@@ -372,13 +409,13 @@ public class SessionHandlerImpl implements SessionHandler {
         return path.substring(s, e);
       }
     } else {
-      // only pick the first cookie, when multiple sessions are used:
-      // https://www.rfc-editor.org/rfc/rfc6265#section-5.4
-      // The user agent SHOULD sort the cookie-list in the following order:
-      // Cookies with longer paths are listed before cookies with shorter paths.
-      Cookie cookie = context.request().getCookie(sessionCookieName);
+      Cookie cookie = requestSessionCookie(context);
       if (cookie != null) {
         // Look up sessionId
+        if (Objects.nonNull(signature)) {
+          // If we expect signed cookies parse the content, if it fails return null triggering a new session creation
+          return signature.parse(cookie.getValue());
+        }
         return cookie.getValue();
       }
     }
@@ -402,7 +439,7 @@ public class SessionHandlerImpl implements SessionHandler {
         return context.succeededFuture(session);
       });
   }
-  private void doGetSession(Vertx vertx, long startTime, String sessionID, Handler<AsyncResult<Session>> resultHandler) {
+  private void doGetSession(Vertx vertx, long startTime, String sessionID, Completable<Session> resultHandler) {
     sessionStore.get(sessionID)
       .onComplete(res -> {
       if (res.succeeded()) {
@@ -416,7 +453,7 @@ public class SessionHandlerImpl implements SessionHandler {
           }
         }
       }
-      resultHandler.handle(res);
+      resultHandler.complete(res.result(), res.cause());
     });
   }
 
@@ -443,18 +480,22 @@ public class SessionHandlerImpl implements SessionHandler {
     addStoreSessionHandler(context);
   }
 
-  private Cookie sessionCookie(final RoutingContext context, final Session session) {
-    // only pick the first cookie, when multiple sessions are used:
-    // https://www.rfc-editor.org/rfc/rfc6265#section-5.4
-    // The user agent SHOULD sort the cookie-list in the following order:
-    // Cookies with longer paths are listed before cookies with shorter paths.
-    Cookie cookie = context.request().getCookie(sessionCookieName);
-    if (cookie != null) {
-      return cookie;
+  /**
+   * only pick the first cookie, when multiple sessions are used:
+   * https://www.rfc-editor.org/rfc/rfc6265#section-5.4
+   * The user agent SHOULD sort the cookie-list in the following order:
+   * Cookies with longer paths are listed before cookies with shorter paths.
+   */
+  private Cookie requestSessionCookie(final RoutingContext context) {
+    return context.request().getCookie(sessionCookieName);
+  }
+
+  private void sessionCookie(final RoutingContext context, String cookieValue) {
+    if (Objects.nonNull(signature)) {
+      cookieValue = signature.sign(cookieValue);
     }
-    cookie = Cookie.cookie(sessionCookieName, session.value());
+    Cookie cookie = Cookie.cookie(sessionCookieName, cookieValue);
     setCookieProperties(cookie, false);
     context.response().addCookie(cookie);
-    return cookie;
   }
 }

@@ -18,14 +18,19 @@ package io.vertx.ext.web.impl;
 
 import io.netty.handler.codec.http.HttpResponseStatus;
 import io.vertx.core.Handler;
-import io.vertx.core.impl.logging.Logger;
-import io.vertx.core.impl.logging.LoggerFactory;
+import io.vertx.core.http.HttpMethod;
+import io.vertx.core.internal.logging.Logger;
+import io.vertx.core.internal.logging.LoggerFactory;
+import io.vertx.ext.auth.audit.SecurityAudit;
+import io.vertx.ext.web.MIMEHeader;
 import io.vertx.ext.web.Route;
 import io.vertx.ext.web.Router;
 import io.vertx.ext.web.RoutingContext;
 import io.vertx.ext.web.handler.HttpException;
 
+import java.util.HashSet;
 import java.util.Iterator;
+import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicIntegerFieldUpdater;
 
@@ -57,11 +62,18 @@ public abstract class RoutingContextImplBase implements RoutingContextInternal {
   boolean normalizedMatch;
   // internal runtime state
   private volatile long seen;
+  // immutable security audit
+  private SecurityAudit securityAudit;
+
+  protected Set<HttpMethod> allowedMethods = new HashSet<>();
+
+  protected Set<MIMEHeader> allowedContentTypes = new HashSet<>();
 
   RoutingContextImplBase(String mountPoint, Set<RouteImpl> routes, Router currentRouter) {
     this.mountPoint = mountPoint;
     this.routes = routes;
     this.iter = routes.iterator();
+    this.securityAudit = SecurityAudit.NOOP;
 
     this.currentRouter = currentRouter;
     resetMatchFailure();
@@ -89,8 +101,31 @@ public abstract class RoutingContextImplBase implements RoutingContextInternal {
   }
 
   @Override
+  public void setSecurityAudit(SecurityAudit securityAudit) {
+    Objects.requireNonNull(securityAudit, "SecurityAudit cannot be null");
+    this.securityAudit = securityAudit;
+  }
+
+  @Override
+  public SecurityAudit securityAudit() {
+    return securityAudit;
+  }
+
+  @Override
   public synchronized RoutingContextInternal setMatchFailure(int matchFailure) {
     this.matchFailure = matchFailure;
+    return this;
+  }
+
+  @Override
+  public synchronized RoutingContextInternal addAllowedMethods(Set<HttpMethod> allowedMethods) {
+    this.allowedMethods.addAll(allowedMethods);
+    return this;
+  }
+
+  @Override
+  public synchronized RoutingContextInternal addAllowedContentTypes(Set<MIMEHeader> allowedContentTypes) {
+    this.allowedContentTypes.addAll(allowedContentTypes);
     return this;
   }
 
@@ -140,6 +175,19 @@ public abstract class RoutingContextImplBase implements RoutingContextInternal {
           currentRoute.handleFailure(this);
           return true;
         }
+
+        RouterImpl subRouter = (RouterImpl) currentRoute.getSubRouter();
+        if (subRouter != null) {
+          int statusCode = statusCode();
+          if (statusCode == -1) {
+            statusCode = failed ? 500 : matchFailure;
+          }
+          Handler<RoutingContext> errorHandler = subRouter.getErrorHandlerByStatusCode(statusCode);
+          if (errorHandler != null) {
+            errorHandler.handle(this);
+            return true;
+          }
+        }
       } catch (Throwable t) {
         handleInHandlerRuntimeFailure(currentRoute.getRouter(), failed, t);
         return true;
@@ -179,11 +227,18 @@ public abstract class RoutingContextImplBase implements RoutingContextInternal {
           }
           return true;
         } else if (matchResult == 405) {
+          //We need to add supported methods for route in case we need to send 405 at end
+          allowedMethods.addAll(routeState.getMethods());
           // invalid method match, means that
           // we should "update" the failure if not found to be invalid method
           if (this.matchFailure == 404) {
             this.matchFailure = matchResult;
           }
+        } else if (matchResult == 415) {
+          // invalid content type
+          // send allowed content types
+          allowedContentTypes.addAll(routeState.getConsumes());
+          this.matchFailure = matchResult;
         } else if (matchResult != 404) {
           this.matchFailure = matchResult;
         }
@@ -237,14 +292,21 @@ public abstract class RoutingContextImplBase implements RoutingContextInternal {
 
     if (!response().ended() && !response().closed()) {
       try {
-        response().setStatusCode(code);
+        if (response().headWritten()) {
+          response().reset(code);
+        } else {
+          response().setStatusCode(code);
+        }
       } catch (IllegalArgumentException e) {
         // means that there are invalid chars in the status message
         response()
-            .setStatusMessage(HttpResponseStatus.valueOf(code).reasonPhrase())
-            .setStatusCode(code);
+          .setStatusMessage(HttpResponseStatus.valueOf(code).reasonPhrase())
+          .setStatusCode(code);
+      } finally {
+        if (!response().headWritten()) {
+          response().end(response().getStatusMessage());
+        }
       }
-      response().end(response().getStatusMessage());
     }
   }
 

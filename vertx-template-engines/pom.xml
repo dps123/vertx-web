@@ -7,18 +7,15 @@
   <parent>
     <groupId>io.vertx</groupId>
     <artifactId>vertx-web-parent</artifactId>
-    <version>4.3.5-SNAPSHOT</version>
+    <version>5.3.0-SNAPSHOT</version>
   </parent>
 
+  <name>vertx-template-engines</name>
   <artifactId>vertx-template-engines</artifactId>
   <packaging>pom</packaging>
 
-  <properties>
-    <doc.skip>true</doc.skip>
-  </properties>
-
   <modules>
-    <module>vertx-web-templ-jade</module>
+    <module>vertx-web-templ-pug</module>
     <module>vertx-web-templ-mvel</module>
     <module>vertx-web-templ-handlebars</module>
     <module>vertx-web-templ-thymeleaf</module>
@@ -33,6 +30,17 @@
   <build>
     <pluginManagement>
       <plugins>
+        <plugin>
+          <artifactId>maven-compiler-plugin</artifactId>
+          <executions>
+            <execution>
+              <id>default-compile</id>
+              <configuration>
+                <proc>none</proc>
+              </configuration>
+            </execution>
+          </executions>
+        </plugin>
         <plugin>
           <groupId>org.apache.maven.plugins</groupId>
           <artifactId>maven-shade-plugin</artifactId>

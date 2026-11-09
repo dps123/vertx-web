@@ -1,5 +1,5 @@
 /*
- * Copyright 2021 Red Hat, Inc.
+ * Copyright 2023 Red Hat, Inc.
  *
  * Red Hat licenses this file to you under the Apache License, version 2.0
  * (the "License"); you may not use this file except in compliance with the
@@ -18,16 +18,20 @@ package io.vertx.ext.web.handler.graphql.impl.ws;
 
 import graphql.ExecutionInput;
 import graphql.ExecutionResult;
+import graphql.GraphQL;
+import graphql.execution.preparsed.persisted.PersistedQuerySupport;
 import io.vertx.core.AsyncResult;
 import io.vertx.core.Future;
 import io.vertx.core.Handler;
 import io.vertx.core.Promise;
 import io.vertx.core.buffer.Buffer;
 import io.vertx.core.http.ServerWebSocket;
-import io.vertx.core.impl.ContextInternal;
-import io.vertx.core.impl.logging.Logger;
-import io.vertx.core.impl.logging.LoggerFactory;
+import io.vertx.core.internal.ContextInternal;
+import io.vertx.core.internal.logging.Logger;
+import io.vertx.core.internal.logging.LoggerFactory;
+import io.vertx.core.json.JsonArray;
 import io.vertx.core.json.JsonObject;
+import io.vertx.ext.web.RoutingContext;
 import io.vertx.ext.web.handler.graphql.ExecutionInputBuilderWithContext;
 import io.vertx.ext.web.handler.graphql.impl.GraphQLQuery;
 import io.vertx.ext.web.handler.graphql.ws.ConnectionInitEvent;
@@ -36,6 +40,7 @@ import io.vertx.ext.web.handler.graphql.ws.MessageType;
 import org.reactivestreams.Publisher;
 import org.reactivestreams.Subscription;
 
+import java.util.Collections;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
@@ -48,17 +53,29 @@ public class ConnectionHandler {
 
   private static final Logger log = LoggerFactory.getLogger(ConnectionHandler.class);
 
-  private final GraphQLWSHandlerImpl graphQLWSHandler;
+  private final GraphQL graphQL;
+  private final long connectionInitWaitTimeout;
+  private final Handler<ConnectionInitEvent> connectionInitHandler;
+  private final Handler<ExecutionInputBuilderWithContext<Message>> beforeExecuteHandler;
+  private final Handler<Message> messageHandler;
+  private final Handler<ServerWebSocket> endHandler;
   private final ContextInternal context;
   private final ServerWebSocket socket;
+  private final Map<Class<RoutingContext>, Object> mapOfContext;
 
   private ConnectionState state;
 
-  public ConnectionHandler(GraphQLWSHandlerImpl graphQLWSHandler, ContextInternal context, ServerWebSocket socket) {
-    this.graphQLWSHandler = graphQLWSHandler;
-    this.context = context;
+  public ConnectionHandler(GraphQL graphQL, long connectionInitWaitTimeout, Handler<ConnectionInitEvent> connectionInitHandler, Handler<ExecutionInputBuilderWithContext<Message>> beforeExecuteHandler, Handler<Message> messageHandler, Handler<ServerWebSocket> endHandler, RoutingContext routingContext, ServerWebSocket socket) {
+    this.graphQL = graphQL;
+    this.connectionInitWaitTimeout = connectionInitWaitTimeout;
+    this.connectionInitHandler = connectionInitHandler;
+    this.beforeExecuteHandler = beforeExecuteHandler;
+    this.messageHandler = messageHandler;
+    this.endHandler = endHandler;
+    this.context = (ContextInternal) routingContext.vertx().getOrCreateContext();
     this.socket = socket;
-    state = new InitialState();
+    this.mapOfContext = Collections.singletonMap(RoutingContext.class, routingContext);
+    this.state = new InitialState();
   }
 
   public void handleConnection() {
@@ -83,6 +100,12 @@ public class ConnectionHandler {
       return;
     }
     MessageImpl message = state.createMessage(type, json);
+
+    Handler<Message> mh = messageHandler;
+    if (mh != null) {
+      mh.handle(message);
+    }
+
     state.handleMessage(message);
   }
 
@@ -99,11 +122,15 @@ public class ConnectionHandler {
     if (payload != null) {
       message.put("payload", payload);
     }
-    socket.writeTextMessage(message.toString());
+    socket.writeTextMessage(message.encode());
   }
 
   private void close(Void unused) {
     state.close();
+    Handler<ServerWebSocket> eh = endHandler;
+    if (eh != null) {
+      eh.handle(socket);
+    }
   }
 
   private interface ConnectionState {
@@ -120,7 +147,7 @@ public class ConnectionHandler {
     final long timerId;
 
     InitialState() {
-      timerId = context.setTimer(graphQLWSHandler.getConnectionInitWaitTimeout(), this);
+      timerId = context.setTimer(connectionInitWaitTimeout, this);
     }
 
     @Override
@@ -153,12 +180,13 @@ public class ConnectionHandler {
 
     void connectionInit(MessageImpl msg) {
       context.owner().cancelTimer(timerId);
-      Handler<ConnectionInitEvent> connectionInitHandler = graphQLWSHandler.getConnectionInitHandler();
-      if (connectionInitHandler != null) {
+      Handler<ConnectionInitEvent> cih = connectionInitHandler;
+      if (cih != null) {
         Promise<Object> connectionPromise = context.promise();
         state = new InitializingState(connectionPromise.future());
-        connectionInitHandler.handle(new ConnectionInitEventImpl(msg, connectionPromise));
+        cih.handle(new ConnectionInitEventImpl(msg, connectionPromise));
       } else {
+        sendMessage(null, CONNECTION_ACK, null);
         state = new ReadyState(null);
       }
     }
@@ -262,7 +290,7 @@ public class ConnectionHandler {
 
       @Override
       public void onError(Throwable t) {
-        sendMessage(id, ERROR, toJsonObject(t));
+        sendMessage(id, ERROR, new JsonArray().add(toJsonObject(t)));
         subscriptions.remove(id);
       }
 
@@ -319,8 +347,6 @@ public class ConnectionHandler {
       GraphQLQuery payload = new GraphQLQuery(msg.message().getJsonObject("payload"));
       ExecutionInput.Builder builder = ExecutionInput.newExecutionInput();
 
-
-      builder.query(payload.getQuery());
       String operationName = payload.getOperationName();
       if (operationName != null) {
         builder.operationName(operationName);
@@ -333,8 +359,20 @@ public class ConnectionHandler {
       if (initialValue != null) {
         builder.root(initialValue);
       }
+      Map<String, Object> extensions = payload.getExtensions();
+      if (extensions != null) {
+        builder.extensions(extensions);
+      }
+      String query = payload.getQuery();
+      if (query != null) {
+        builder.query(query);
+      } else if (extensions != null && extensions.containsKey("persistedQuery")) {
+        builder.query(PersistedQuerySupport.PERSISTED_QUERY_MARKER);
+      }
 
-      Handler<ExecutionInputBuilderWithContext<Message>> beforeExecute = graphQLWSHandler.getBeforeExecute();
+      builder.graphQLContext(mapOfContext);
+
+      Handler<ExecutionInputBuilderWithContext<Message>> beforeExecute = beforeExecuteHandler;
       if (beforeExecute != null) {
         beforeExecute.handle(new ExecutionInputBuilderWithContext<Message>() {
           @Override
@@ -349,7 +387,7 @@ public class ConnectionHandler {
         });
       }
 
-      graphQLWSHandler.getGraphQL().executeAsync(builder).whenCompleteAsync((executionResult, throwable) -> {
+      graphQL.executeAsync(builder).whenCompleteAsync((executionResult, throwable) -> {
         if (throwable == null) {
           if (executionResult.getData() instanceof Publisher) {
             Publisher<ExecutionResult> data = executionResult.getData();
@@ -362,13 +400,19 @@ public class ConnectionHandler {
           }
         } else {
           subscriptions.remove(id);
-          sendMessage(id, ERROR, toJsonObject(throwable));
+          sendMessage(id, ERROR, new JsonArray().add(toJsonObject(throwable)));
         }
       }, executor);
     }
 
     void unsubscribe(MessageImpl msg) {
-      Subscription s = subscriptions.remove(msg.id());
+      String id = msg.id();
+      if (id == null) {
+        socket.close((short) 4400, "Complete message must have an ID");
+        return;
+      }
+
+      Subscription s = subscriptions.remove(id);
       if (s != null) {
         s.cancel();
       }

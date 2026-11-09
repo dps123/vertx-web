@@ -1,5 +1,5 @@
 /*
- * Copyright 2021 Red Hat, Inc.
+ * Copyright 2023 Red Hat, Inc.
  *
  * Red Hat licenses this file to you under the Apache License, version 2.0
  * (the "License"); you may not use this file except in compliance with the
@@ -17,19 +17,14 @@
 package io.vertx.ext.web.handler.graphql;
 
 import graphql.GraphQL;
-import graphql.GraphQLContext;
-import io.vertx.codegen.annotations.Fluent;
 import io.vertx.codegen.annotations.GenIgnore;
 import io.vertx.codegen.annotations.VertxGen;
 import io.vertx.core.Handler;
 import io.vertx.ext.web.RoutingContext;
+import io.vertx.ext.web.handler.graphql.impl.GraphQLHandlerBuilderImpl;
 import io.vertx.ext.web.handler.graphql.impl.GraphQLHandlerImpl;
-import org.dataloader.DataLoaderRegistry;
 
-import java.util.Locale;
-import java.util.function.Function;
-
-import static io.vertx.codegen.annotations.GenIgnore.PERMITTED_TYPE;
+import java.util.Objects;
 
 /**
  * A {@link io.vertx.ext.web.Route} handler for GraphQL requests.
@@ -46,7 +41,7 @@ public interface GraphQLHandler extends Handler<RoutingContext> {
    */
   @GenIgnore(GenIgnore.PERMITTED_TYPE)
   static GraphQLHandler create(GraphQL graphQL) {
-    return create(graphQL, new GraphQLHandlerOptions());
+    return create(graphQL, null);
   }
 
   /**
@@ -58,61 +53,16 @@ public interface GraphQLHandler extends Handler<RoutingContext> {
    */
   @GenIgnore(GenIgnore.PERMITTED_TYPE)
   static GraphQLHandler create(GraphQL graphQL, GraphQLHandlerOptions options) {
-    return new GraphQLHandlerImpl(graphQL, options);
+    return new GraphQLHandlerImpl(Objects.requireNonNull(graphQL, "graphQL instance is null"), options, null);
   }
 
   /**
-   * Retrieves the {@link RoutingContext} from the {@link GraphQLContext}.
-   *
-   * @param graphQlContext the GraphQL context object
-   * @return the {@link RoutingContext}
+   * Create a new {@link GraphQLHandlerBuilder} that will use the provided {@code graphQL} to build a {@link GraphQLHandler}.
+   * <p>
+   * The handler will be configured with default {@link GraphQLHandlerOptions options}.
    */
-  @GenIgnore(PERMITTED_TYPE)
-  static RoutingContext getRoutingContext(GraphQLContext graphQlContext) {
-    return graphQlContext.get(RoutingContext.class);
+  @GenIgnore(GenIgnore.PERMITTED_TYPE)
+  static GraphQLHandlerBuilder builder(GraphQL graphQL) {
+    return new GraphQLHandlerBuilderImpl(Objects.requireNonNull(graphQL, "graphQL instance is null"));
   }
-
-  /**
-   * Customize the query context object.
-   * The provided {@code factory} method will be invoked for each incoming GraphQL request.
-   *
-   * @return a reference to this, so the API can be used fluently
-   * @deprecated as of 4.2, use {@link #beforeExecute(Handler)} instead
-   */
-  @Fluent
-  @Deprecated
-  GraphQLHandler queryContext(Function<RoutingContext, Object> factory);
-
-  /**
-   * Customize the {@link DataLoaderRegistry}.
-   * The provided {@code factory} method will be invoked for each incoming GraphQL request.
-   *
-   * @return a reference to this, so the API can be used fluently
-   * @deprecated as of 4.2, use {@link #beforeExecute(Handler)} instead
-   */
-  @Fluent
-  @GenIgnore(GenIgnore.PERMITTED_TYPE)
-  @Deprecated
-  GraphQLHandler dataLoaderRegistry(Function<RoutingContext, DataLoaderRegistry> factory);
-
-  /**
-   * Customize the {@link Locale} passed to the GraphQL execution engine.
-   * The provided {@code factory} method will be invoked for each incoming GraphQL request.
-   *
-   * @return a reference to this, so the API can be used fluently
-   * @deprecated as of 4.2, use {@link #beforeExecute(Handler)} instead
-   */
-  @Fluent
-  @GenIgnore(GenIgnore.PERMITTED_TYPE)
-  @Deprecated
-  GraphQLHandler locale(Function<RoutingContext, Locale> factory);
-
-  /**
-   * Set a callback to invoke before executing a GraphQL query.
-   *
-   * @param config the callback to invoke
-   * @return a reference to this, so the API can be used fluently
-   */
-  @Fluent
-  GraphQLHandler beforeExecute(Handler<ExecutionInputBuilderWithContext<RoutingContext>> config);
 }

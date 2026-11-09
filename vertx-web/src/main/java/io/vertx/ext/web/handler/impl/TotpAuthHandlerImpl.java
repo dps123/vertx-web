@@ -15,12 +15,13 @@
  */
 package io.vertx.ext.web.handler.impl;
 
-import io.vertx.core.AsyncResult;
 import io.vertx.core.Future;
-import io.vertx.core.Handler;
+import io.vertx.core.VertxException;
 import io.vertx.core.http.HttpMethod;
 import io.vertx.core.json.JsonObject;
 import io.vertx.ext.auth.User;
+import io.vertx.ext.auth.audit.Marker;
+import io.vertx.ext.auth.audit.SecurityAudit;
 import io.vertx.ext.auth.otp.OtpCredentials;
 import io.vertx.ext.auth.otp.OtpKey;
 import io.vertx.ext.auth.otp.OtpKeyGenerator;
@@ -31,6 +32,7 @@ import io.vertx.ext.web.Session;
 import io.vertx.ext.web.handler.HttpException;
 import io.vertx.ext.web.handler.OtpAuthHandler;
 import io.vertx.ext.web.impl.OrderListener;
+import io.vertx.ext.web.impl.RoutingContextInternal;
 
 /**
  * @author <a href="mailto:pmlopes@gmail.com">Paulo Lopes</a>
@@ -54,22 +56,21 @@ public class TotpAuthHandlerImpl extends AuthenticationHandlerImpl<TotpAuth> imp
   }
 
   @Override
-  public void authenticate(RoutingContext ctx, Handler<AsyncResult<User>> handler) {
+  public Future<User> authenticate(RoutingContext ctx) {
     if (verify == null) {
-      handler.handle(Future.failedFuture(new HttpException(500, new IllegalStateException("No callback mounted!"))));
-      return;
+      return Future.failedFuture(new HttpException(500, new IllegalStateException("No callback mounted!")));
     }
 
     final User user = ctx.user();
 
     if (user == null) {
-      handler.handle(Future.failedFuture(new HttpException(401)));
+      return Future.failedFuture(new HttpException(401));
     } else {
       Boolean userOtp = user.get("mfa");
       // user hasn't 2fa yet?
       if (userOtp == null || !userOtp) {
         if (verifyUrl == null) {
-          handler.handle(Future.failedFuture(new HttpException(401, "User TOTP verification missing")));
+          return Future.failedFuture(new HttpException(401, "User TOTP verification missing"));
         } else {
           final Session session = ctx.session();
           if (session != null) {
@@ -78,10 +79,10 @@ public class TotpAuthHandlerImpl extends AuthenticationHandlerImpl<TotpAuth> imp
               .put("redirect_uri", uri);
           }
 
-          handler.handle(Future.failedFuture(new HttpException(302, verifyUrl)));
+          return Future.failedFuture(new HttpException(302, verifyUrl));
         }
       } else {
-        handler.handle(Future.succeededFuture(ctx.user()));
+        return Future.succeededFuture(user);
       }
     }
   }
@@ -144,7 +145,7 @@ public class TotpAuthHandlerImpl extends AuthenticationHandlerImpl<TotpAuth> imp
       .handler(ctx -> {
         final User user = ctx.user();
         if (user == null || user.get("username") == null) {
-          ctx.fail(new IllegalStateException("User object misses 'username' attribute"));
+          ctx.fail(new VertxException("User object misses 'username' attribute", true));
           return;
         }
         final OtpKey key = otpKeyGen.generate();
@@ -167,8 +168,9 @@ public class TotpAuthHandlerImpl extends AuthenticationHandlerImpl<TotpAuth> imp
       .order(order - 1)
       .handler(ctx -> {
         final User user = ctx.user();
+
         if (user == null || user.get("username") == null) {
-          ctx.fail(new IllegalStateException("User object misses 'username' attribute"));
+          ctx.fail(new VertxException("User object misses 'username' attribute", true));
           return;
         }
 
@@ -176,8 +178,14 @@ public class TotpAuthHandlerImpl extends AuthenticationHandlerImpl<TotpAuth> imp
           ctx.fail(new HttpException(400, "Missing 'code' form attribute"));
           return;
         }
-        authProvider.authenticate(new OtpCredentials(user.get("username"), ctx.request().getParam("code")))
+
+        final OtpCredentials credentials = new OtpCredentials(user.get("username"), ctx.request().getParam("code"));
+        final SecurityAudit audit = ((RoutingContextInternal) ctx).securityAudit();
+        audit.credentials(credentials);
+
+        authProvider.authenticate(credentials)
           .onSuccess(newUser -> {
+            audit.audit(Marker.AUTHENTICATION, true);
             user.principal().mergeIn(user.principal());
             user.attributes().mergeIn(user.attributes());
             // marker
@@ -196,7 +204,10 @@ public class TotpAuthHandlerImpl extends AuthenticationHandlerImpl<TotpAuth> imp
             }
             ctx.redirect(redirect);
           })
-          .onFailure(err -> ctx.fail(401, err));
+          .onFailure(err -> {
+            audit.audit(Marker.AUTHENTICATION, true);
+            ctx.fail(401, err);
+          });
       });
   }
 }
